@@ -694,17 +694,42 @@ func promptGitHubStore() *ghstore.GitHubStore {
 	}
 
 	if repo == "" {
-		err = huh.NewForm(
-			huh.NewGroup(
-				huh.NewInput().
-					Title("GitHub repo").
-					Description("owner/repo for your toskill store").
-					Placeholder("yourname/toskill-store").
-					Value(&repo),
-			),
-		).WithTheme(huh.ThemeCharm()).Run()
-		if err != nil || repo == "" {
-			return nil
+		// List user's repos for selection
+		fmt.Fprintf(os.Stderr, "🔍 Loading your repositories...\n")
+		repos, listErr := ghauth.ListRepos(30)
+		if listErr == nil && len(repos) > 0 {
+			opts := make([]huh.Option[string], 0, len(repos)+1)
+			for _, r := range repos {
+				opts = append(opts, huh.NewOption(r, r))
+			}
+			opts = append(opts, huh.NewOption("⌨️  Enter manually", "__manual__"))
+			err = huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("📦 Select GitHub repo").
+						Description("Choose a repo for your toskill store").
+						Options(opts...).
+						Value(&repo),
+				),
+			).WithTheme(huh.ThemeCharm()).Run()
+			if err != nil {
+				return nil
+			}
+		}
+		if repo == "__manual__" || repo == "" {
+			repo = ""
+			err = huh.NewForm(
+				huh.NewGroup(
+					huh.NewInput().
+						Title("GitHub repo").
+						Description("owner/repo for your toskill store").
+						Placeholder("yourname/toskill-store").
+						Value(&repo),
+				),
+			).WithTheme(huh.ThemeCharm()).Run()
+			if err != nil || repo == "" {
+				return nil
+			}
 		}
 	} else {
 		fmt.Fprintf(os.Stderr, "📦 Using GitHub repo from config: %s\n", repo)
