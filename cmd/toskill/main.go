@@ -470,23 +470,70 @@ func runStatus(cfg config.Config) error {
 }
 
 func runRemove(cfg config.Config, store *ghstore.GitHubStore) error {
-	// Collect all artifacts
 	type artifact struct {
 		Category string // "article", "knowledge-base", "skill"
 		Name     string
-		LocalDir string
-		GHPrefix string
+		LocalDir string // empty if only on GitHub
+		GHPrefix string // empty if only local
+		HasLocal bool
+		HasGH    bool
 	}
 
-	var all []artifact
+	seen := make(map[string]*artifact) // key: "category/name"
+
+	// Collect local artifacts
 	for _, a := range listDir(cfg.ArticlesDir()) {
-		all = append(all, artifact{"article", a, filepath.Join(cfg.ArticlesDir(), a), "articles/" + a})
+		key := "article/" + a
+		seen[key] = &artifact{"article", a, filepath.Join(cfg.ArticlesDir(), a), "articles/" + a, true, false}
 	}
 	for _, kb := range listDirs(cfg.KnowledgeBasesDir()) {
-		all = append(all, artifact{"knowledge-base", kb, filepath.Join(cfg.KnowledgeBasesDir(), kb), "knowledge-bases/" + kb})
+		key := "knowledge-base/" + kb
+		seen[key] = &artifact{"knowledge-base", kb, filepath.Join(cfg.KnowledgeBasesDir(), kb), "knowledge-bases/" + kb, true, false}
 	}
 	for _, s := range listDirs(cfg.SkillsDir()) {
-		all = append(all, artifact{"skill", s, filepath.Join(cfg.SkillsDir(), s), "skills/" + s})
+		key := "skill/" + s
+		seen[key] = &artifact{"skill", s, filepath.Join(cfg.SkillsDir(), s), "skills/" + s, true, false}
+	}
+
+	// Collect GitHub artifacts
+	if store != nil {
+		fmt.Fprintf(os.Stderr, "🔍 Scanning GitHub repo...\n")
+		if files, err := store.ListFiles("articles"); err == nil {
+			for _, f := range files {
+				key := "article/" + f
+				if a, ok := seen[key]; ok {
+					a.HasGH = true
+				} else {
+					seen[key] = &artifact{"article", f, "", "articles/" + f, false, true}
+				}
+			}
+		}
+		if dirs, err := store.ListSubDirs("knowledge-bases"); err == nil {
+			for _, d := range dirs {
+				key := "knowledge-base/" + d
+				if a, ok := seen[key]; ok {
+					a.HasGH = true
+				} else {
+					seen[key] = &artifact{"knowledge-base", d, "", "knowledge-bases/" + d, false, true}
+				}
+			}
+		}
+		if dirs, err := store.ListSubDirs("skills"); err == nil {
+			for _, d := range dirs {
+				key := "skill/" + d
+				if a, ok := seen[key]; ok {
+					a.HasGH = true
+				} else {
+					seen[key] = &artifact{"skill", d, "", "skills/" + d, false, true}
+				}
+			}
+		}
+	}
+
+	// Flatten to slice
+	var all []artifact
+	for _, a := range seen {
+		all = append(all, *a)
 	}
 
 	if len(all) == 0 {
@@ -498,7 +545,16 @@ func runRemove(cfg config.Config, store *ghstore.GitHubStore) error {
 	var options []huh.Option[int]
 	for i, a := range all {
 		icon := map[string]string{"article": "📄", "knowledge-base": "📚", "skill": "🛠️"}[a.Category]
-		label := fmt.Sprintf("%s %s (%s)", icon, a.Name, a.Category)
+		loc := ""
+		switch {
+		case a.HasLocal && a.HasGH:
+			loc = "local + GitHub"
+		case a.HasLocal:
+			loc = "local"
+		case a.HasGH:
+			loc = "GitHub"
+		}
+		label := fmt.Sprintf("%s %s (%s) [%s]", icon, a.Name, a.Category, loc)
 		options = append(options, huh.NewOption(label, i))
 	}
 
@@ -545,14 +601,14 @@ func runRemove(cfg config.Config, store *ghstore.GitHubStore) error {
 	// Delete
 	for _, idx := range selected {
 		a := all[idx]
-		// Local
-		if err := os.RemoveAll(a.LocalDir); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  Local delete failed for %s: %v\n", a.Name, err)
-		} else {
-			fmt.Fprintf(os.Stderr, "🗑️  Removed local: %s\n", a.Name)
+		if a.HasLocal && a.LocalDir != "" {
+			if err := os.RemoveAll(a.LocalDir); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠️  Local delete failed for %s: %v\n", a.Name, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "🗑️  Removed local: %s\n", a.Name)
+			}
 		}
-		// GitHub
-		if store != nil {
+		if a.HasGH && store != nil {
 			if err := store.DeleteDir(a.GHPrefix, "Remove: "+a.Name); err != nil {
 				fmt.Fprintf(os.Stderr, "⚠️  GitHub delete failed for %s: %v\n", a.Name, err)
 			} else {
@@ -570,15 +626,30 @@ func runReset(cfg config.Config, store *ghstore.GitHubStore) error {
 	articles := listDir(cfg.ArticlesDir())
 	kbs := listDirs(cfg.KnowledgeBasesDir())
 	skills := listDirs(cfg.SkillsDir())
-	total := len(articles) + len(kbs) + len(skills)
+	localTotal := len(articles) + len(kbs) + len(skills)
 
 	summary := fmt.Sprintf("Local: %d articles, %d KBs, %d skills in %s",
 		len(articles), len(kbs), len(skills), cfg.Redact(cfg.OutputDir))
+
+	ghTotal := 0
 	if store != nil {
-		summary += fmt.Sprintf("\nGitHub: %s/%s", store.Owner(), store.Repo())
+		fmt.Fprintf(os.Stderr, "🔍 Scanning GitHub repo...\n")
+		var ghArticles, ghKBs, ghSkills int
+		if files, err := store.ListFiles("articles"); err == nil {
+			ghArticles = len(files)
+		}
+		if dirs, err := store.ListSubDirs("knowledge-bases"); err == nil {
+			ghKBs = len(dirs)
+		}
+		if dirs, err := store.ListSubDirs("skills"); err == nil {
+			ghSkills = len(dirs)
+		}
+		ghTotal = ghArticles + ghKBs + ghSkills
+		summary += fmt.Sprintf("\nGitHub: %d articles, %d KBs, %d skills in %s/%s",
+			ghArticles, ghKBs, ghSkills, store.Owner(), store.Repo())
 	}
 
-	if total == 0 && store == nil {
+	if localTotal == 0 && ghTotal == 0 {
 		fmt.Fprintf(os.Stderr, "📭 Nothing to reset — store is already empty.\n")
 		return nil
 	}

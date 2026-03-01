@@ -271,6 +271,76 @@ func (s *GitHubStore) ListDir(path string) ([]string, error) {
 	return paths, nil
 }
 
+// ListSubDirs lists subdirectory names under a path (e.g. "skills" → ["my-skill", "other-skill"]).
+func (s *GitHubStore) ListSubDirs(path string) ([]string, error) {
+	if err := s.resolveOwner(); err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s", s.owner, s.repo, path, s.branch)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 {
+		return nil, nil
+	}
+
+	var items []struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	json.NewDecoder(resp.Body).Decode(&items)
+
+	var dirs []string
+	for _, item := range items {
+		if item.Type == "dir" {
+			dirs = append(dirs, item.Name)
+		}
+	}
+	return dirs, nil
+}
+
+// ListFiles lists file names under a path (e.g. "articles" → ["example-com.md"]).
+func (s *GitHubStore) ListFiles(path string) ([]string, error) {
+	if err := s.resolveOwner(); err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s", s.owner, s.repo, path, s.branch)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 {
+		return nil, nil
+	}
+
+	var items []struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	json.NewDecoder(resp.Body).Decode(&items)
+
+	var files []string
+	for _, item := range items {
+		if item.Type == "file" {
+			files = append(files, item.Name)
+		}
+	}
+	return files, nil
+}
+
 // DeleteDir recursively deletes all files in a directory.
 func (s *GitHubStore) DeleteDir(dirPath, message string) error {
 	files, err := s.listAllFiles(dirPath)
