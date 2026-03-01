@@ -182,9 +182,15 @@ func main() {
 		err = runStatus(cfg)
 
 	case "remove", "rm":
+		if store == nil {
+			store = promptGitHubStore()
+		}
 		err = runRemove(cfg, store)
 
 	case "reset":
+		if store == nil {
+			store = promptGitHubStore()
+		}
 		err = runReset(cfg, store)
 
 	case "config":
@@ -567,7 +573,7 @@ func runReset(cfg config.Config, store *ghstore.GitHubStore) error {
 	total := len(articles) + len(kbs) + len(skills)
 
 	summary := fmt.Sprintf("Local: %d articles, %d KBs, %d skills in %s",
-		len(articles), len(kbs), len(skills), cfg.OutputDir)
+		len(articles), len(kbs), len(skills), cfg.Redact(cfg.OutputDir))
 	if store != nil {
 		summary += fmt.Sprintf("\nGitHub: %s/%s", store.Owner(), store.Repo())
 	}
@@ -634,7 +640,7 @@ func runReset(cfg config.Config, store *ghstore.GitHubStore) error {
 			os.RemoveAll(dir)
 			os.MkdirAll(dir, 0755)
 		}
-		fmt.Fprintf(os.Stderr, "🗑️  Local store cleared: %s\n", cfg.OutputDir)
+		fmt.Fprintf(os.Stderr, "🗑️  Local store cleared: %s\n", cfg.Redact(cfg.OutputDir))
 	}
 
 	if (resetTarget == "github" || resetTarget == "both") && store != nil {
@@ -653,6 +659,59 @@ func runReset(cfg config.Config, store *ghstore.GitHubStore) error {
 }
 
 // --- Helpers ---
+
+// promptGitHubStore asks the user if they want to include GitHub storage for remove/reset.
+func promptGitHubStore() *ghstore.GitHubStore {
+	var includeGH bool
+	err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("🐙 Include GitHub storage?").
+				Description("Also remove/reset artifacts from a GitHub repo?").
+				Affirmative("Yes").
+				Negative("No, local only").
+				Value(&includeGH),
+		),
+	).WithTheme(huh.ThemeCharm()).Run()
+	if err != nil || !includeGH {
+		return nil
+	}
+
+	// Try to get token
+	token := ghauth.GetToken()
+	if token == "" {
+		token = os.Getenv("GITHUB_TOKEN")
+	}
+	if token == "" {
+		fmt.Fprintf(os.Stderr, "⚠️  No GitHub token found. Run 'gh auth login' first or set GITHUB_TOKEN.\n")
+		return nil
+	}
+
+	// Get repo name — try config first, then ask
+	repo := ""
+	if fileCfg, err := config.LoadConfigFile(); err == nil {
+		repo = fileCfg["github-repo"]
+	}
+
+	if repo == "" {
+		err = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("GitHub repo").
+					Description("owner/repo for your toskill store").
+					Placeholder("yourname/toskill-store").
+					Value(&repo),
+			),
+		).WithTheme(huh.ThemeCharm()).Run()
+		if err != nil || repo == "" {
+			return nil
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "📦 Using GitHub repo from config: %s\n", repo)
+	}
+
+	return ghstore.New(token, repo)
+}
 
 func runConfig(args []string) error {
 	if len(args) == 0 || args[0] == "show" {
