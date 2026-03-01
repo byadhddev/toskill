@@ -32,6 +32,10 @@ type Config struct {
 	AuthMethod        string                // One of Auth* constants (default: AuthAuto)
 	GitHubCopilotToken string               // For AuthGitHubToken method
 	BYOKProvider      *copilot.ProviderConfig // For AuthBYOK method
+
+	// Skill mode
+	SkillMode    string // "new" or "evolve" (default: "new")
+	EvolveSkill  string // Name of existing skill to evolve (for SkillMode "evolve")
 }
 
 // ModelFor returns the model to use for a given phase.
@@ -69,6 +73,7 @@ func DefaultConfig() Config {
 		OutputDir:  defaultOutputDir(),
 		Model:      "claude-opus-4.6",
 		AuthMethod: AuthAuto,
+		SkillMode:  "new",
 	}
 
 	// Load from config file

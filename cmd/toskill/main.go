@@ -57,6 +57,8 @@ func main() {
 	byokProvider := fs.String("byok-provider", "", "BYOK provider type: openai|anthropic|azure (with --auth byok)")
 	byokURL := fs.String("byok-url", "", "BYOK provider base URL (with --auth byok)")
 	byokKey := fs.String("byok-key", "", "BYOK API key (with --auth byok)")
+	evolve := fs.Bool("evolve", false, "Evolve an existing skill instead of creating new")
+	skillName := fs.String("skill-name", "", "Name of existing skill to evolve (with --evolve)")
 	fs.Parse(os.Args[2:])
 
 	cfg := config.DefaultConfig()
@@ -101,6 +103,10 @@ func main() {
 		cfg.BuildModel = *buildModel
 	}
 	cfg.Verbose = *verbose
+	if *evolve {
+		cfg.SkillMode = "evolve"
+		cfg.EvolveSkill = *skillName
+	}
 
 	// GitHub storage setup
 	ghToken := *githubToken
@@ -204,6 +210,9 @@ func runPipeline(client *copilot.Client, cfg config.Config, store *ghstore.GitHu
 		fmt.Fprintf(os.Stderr, "   Output: %s\n", cfg.OutputDir)
 	}
 	fmt.Fprintf(os.Stderr, "   Model: %s\n", cfg.Model)
+	if cfg.SkillMode == "evolve" {
+		fmt.Fprintf(os.Stderr, "   Mode: evolve (skill: %s)\n", cfg.EvolveSkill)
+	}
 	if cfg.ExtractModel != "" || cfg.CurateModel != "" || cfg.BuildModel != "" {
 		fmt.Fprintf(os.Stderr, "   Extract: %s | Curate: %s | Build: %s\n",
 			cfg.ModelFor("extract"), cfg.ModelFor("curate"), cfg.ModelFor("build"))
@@ -830,6 +839,8 @@ func runInteractive() {
 	if result.BuildModel != "" {
 		cfg.BuildModel = result.BuildModel
 	}
+	cfg.SkillMode = result.SkillMode
+	cfg.EvolveSkill = result.EvolveSkill
 
 	// GitHub storage
 	var store *ghstore.GitHubStore
@@ -903,6 +914,8 @@ Flags:
   --build-model <name>     Model override for skill building phase
   --github-repo <repo>     GitHub repo for storage (e.g. 'owner/toskill-store')
   --github-token <tok>     GitHub token for storage (or $GITHUB_TOKEN)
+  --evolve                 Evolve an existing skill instead of creating new
+  --skill-name <name>      Name of existing skill to evolve (with --evolve)
   --verbose                Enable verbose output
 
 Examples:
@@ -927,6 +940,9 @@ Examples:
 
   # With GitHub storage
   toskill run --github-repo myuser/my-skills https://example.com/article
+
+  # Evolve an existing skill with new content
+  toskill run --evolve --skill-name my-skill https://example.com/new-article
 
 Environment:
   COPILOT_CLI_URL           Copilot CLI server address (sets auth to cli-url)

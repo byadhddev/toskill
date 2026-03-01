@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,6 +36,10 @@ type RunConfig struct {
 	CopilotURL         string                  // for AuthCLIUrl
 	GitHubCopilotToken string                  // for AuthGitHubToken
 	BYOKProvider       *copilot.ProviderConfig // for AuthBYOK
+
+	// Skill mode
+	SkillMode   string // "new" or "evolve"
+	EvolveSkill string // name of skill to evolve
 }
 
 // fallbackModels used by legacy FetchModels() only (non-interactive CLI flag mode).
@@ -587,6 +592,52 @@ func RunWizard(savedGitHubRepo string, modelOptions []huh.Option[string]) (*RunC
 		}
 	}
 
+	// --- Page 6: Skill Mode (new vs evolve) ---
+	cfg.SkillMode = "new"
+	err = huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("🔧 Skill Mode").
+				Description("Create a new skill or evolve an existing one?").
+				Options(
+					huh.NewOption("Create new skill", "new"),
+					huh.NewOption("Evolve existing skill", "evolve"),
+				).
+				Value(&cfg.SkillMode),
+		),
+	).WithTheme(theme).Run()
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.SkillMode == "evolve" {
+		// List existing skills from skill-store/skills/
+		skillsDir := filepath.Join(cfg.OutputDir, "skills")
+		existingSkills := listExistingSkills(skillsDir)
+		if len(existingSkills) == 0 {
+			fmt.Fprintf(os.Stderr, "   ⚠️  No existing skills found in %s\n", skillsDir)
+			fmt.Fprintf(os.Stderr, "   Switching to 'new' mode\n")
+			cfg.SkillMode = "new"
+		} else {
+			opts := make([]huh.Option[string], 0, len(existingSkills))
+			for _, s := range existingSkills {
+				opts = append(opts, huh.NewOption(s, s))
+			}
+			err = huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("📦 Select skill to evolve").
+						Description("Choose an existing skill to merge new knowledge into").
+						Options(opts...).
+						Value(&cfg.EvolveSkill),
+				),
+			).WithTheme(theme).Run()
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	// --- Summary & Confirm ---
 	var authSummary string
 	switch cfg.AuthMethod {
@@ -621,6 +672,9 @@ func RunWizard(savedGitHubRepo string, modelOptions []huh.Option[string]) (*RunC
 		"  Auth:     %s\n  URLs:     %d\n  Storage:  %s\n  Model:    %s",
 		authSummary, len(cfg.URLs), storageSummary, modelSummary,
 	)
+	if cfg.SkillMode == "evolve" {
+		summary += fmt.Sprintf("\n  Mode:     Evolve (%s)", cfg.EvolveSkill)
+	}
 	fmt.Println(summaryStyle.Render(summary))
 	fmt.Println()
 
@@ -649,4 +703,21 @@ func parseURLs(raw string) []string {
 		}
 	}
 	return urls
+}
+
+func listExistingSkills(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var skills []string
+	for _, e := range entries {
+		if e.IsDir() {
+			skillFile := filepath.Join(dir, e.Name(), "SKILL.md")
+			if _, err := os.Stat(skillFile); err == nil {
+				skills = append(skills, e.Name())
+			}
+		}
+	}
+	return skills
 }

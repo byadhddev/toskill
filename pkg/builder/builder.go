@@ -20,26 +20,36 @@ var writtenSkillPath string
 // Run transforms a knowledge base into a distributable skill.
 // Returns the path to the written skill.
 func Run(ctx context.Context, client *copilot.Client, cfg config.Config, kbName string) (string, error) {
-	fmt.Fprintf(os.Stderr, "⚡ Skill Builder\n")
+	isEvolve := cfg.SkillMode == "evolve" && cfg.EvolveSkill != ""
+	if isEvolve {
+		fmt.Fprintf(os.Stderr, "⚡ Skill Builder (evolve: %s)\n", cfg.EvolveSkill)
+	} else {
+		fmt.Fprintf(os.Stderr, "⚡ Skill Builder\n")
+	}
 	fmt.Fprintf(os.Stderr, "   KB: %s | Model: %s\n\n", kbName, cfg.ModelFor("build"))
 
 	writtenSkillPath = ""
 	kbDir := cfg.KnowledgeBasesDir()
 	skillsDir := cfg.SkillsDir()
 
+	agentTools := []copilot.Tool{
+		tools.FindSkillTool(),
+		tools.InstallSkillTool(),
+		tools.LoadSkillTool(cfg.OutputDir),
+		listKnowledgeBasesTool(kbDir),
+		readKnowledgeBaseTool(kbDir),
+		writeSkillTool(skillsDir),
+		tools.RunCommandTool(120 * time.Second),
+	}
+	if isEvolve {
+		agentTools = append(agentTools, readExistingSkillTool(skillsDir))
+	}
+
 	sessionCfg := &copilot.SessionConfig{
 		Model:               cfg.ModelFor("build"),
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		SystemMessage:       &copilot.SystemMessageConfig{Content: builderSystemPrompt},
-		Tools: []copilot.Tool{
-			tools.FindSkillTool(),
-			tools.InstallSkillTool(),
-			tools.LoadSkillTool(cfg.OutputDir),
-			listKnowledgeBasesTool(kbDir),
-			readKnowledgeBaseTool(kbDir),
-			writeSkillTool(skillsDir),
-			tools.RunCommandTool(120 * time.Second),
-		},
+		Tools:               agentTools,
 	}
 	cfg.ApplyBYOK(sessionCfg)
 	session, err := client.CreateSession(ctx, sessionCfg)
@@ -61,7 +71,28 @@ func Run(ctx context.Context, client *copilot.Client, cfg config.Config, kbName 
 	})
 	defer unsubscribe()
 
-	prompt := fmt.Sprintf(`Build a proper, distributable skill from the knowledge base named "%s".
+	var prompt string
+	if isEvolve {
+		prompt = fmt.Sprintf(`EVOLVE the existing skill "%s" with new knowledge from KB "%s".
+
+Follow this exact process:
+1. First, find the skill-creator skill using find_skill("skill creator")
+2. Install it if needed using install_skill
+3. Load its SKILL.md using load_skill("skill-creator") — this teaches you how to build proper skills
+4. Read the EXISTING skill using read_existing_skill("%s") — this is the baseline to evolve
+5. Read the new knowledge base using read_knowledge_base("%s")
+6. MERGE: incorporate all new knowledge into the existing skill structure
+7. Write the evolved skill using write_skill with name "%s"
+
+EVOLUTION RULES:
+- NEVER remove existing content from the skill — only add, refine, or reorganize
+- Preserve all existing examples, commands, and techniques verbatim
+- Add new sections or expand existing ones with new knowledge
+- Update the description in frontmatter to reflect broader coverage
+- If references/ existed, keep all existing references and add new ones
+- Add a "## Changelog" entry noting what was added from the new KB`, cfg.EvolveSkill, kbName, cfg.EvolveSkill, kbName, cfg.EvolveSkill)
+	} else {
+		prompt = fmt.Sprintf(`Build a proper, distributable skill from the knowledge base named "%s".
 
 Follow this exact process:
 1. First, find the skill-creator skill using find_skill("skill creator")
@@ -72,6 +103,7 @@ Follow this exact process:
 6. Write the skill using write_skill
 
 The output skill should be concise, actionable, and follow progressive disclosure.`, kbName, kbName)
+	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
@@ -273,15 +305,61 @@ func writeSkillTool(skillsDir string) copilot.Tool {
 		})
 }
 
-const builderSystemPrompt = `You are an autonomous Skill Builder agent. You transform knowledge bases into proper, distributable skills.
+func readExistingSkillTool(skillsDir string) copilot.Tool {
+	type Params struct {
+		Name string `json:"name" jsonschema:"Name of the existing skill to read"`
+	}
+	return copilot.DefineTool("read_existing_skill",
+		"Read an existing skill's SKILL.md and all references. Use this to load the baseline before evolving.",
+		func(p Params, inv copilot.ToolInvocation) (string, error) {
+			if p.Name == "" {
+				return "", fmt.Errorf("name is required")
+			}
+			fmt.Fprintf(os.Stderr, "📖 Reading existing skill: %s\n", p.Name)
+
+			skillPath := filepath.Join(skillsDir, p.Name, "SKILL.md")
+			data, err := os.ReadFile(skillPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return fmt.Sprintf("No skill named '%s' found. Will create as new.", p.Name), nil
+				}
+				return "", fmt.Errorf("failed to read: %w", err)
+			}
+
+			var result strings.Builder
+			result.WriteString("=== SKILL.md ===\n")
+			result.Write(data)
+
+			// Also read references if they exist
+			refsDir := filepath.Join(skillsDir, p.Name, "references")
+			if entries, err := os.ReadDir(refsDir); err == nil {
+				for _, e := range entries {
+					if !e.IsDir() {
+						refData, err := os.ReadFile(filepath.Join(refsDir, e.Name()))
+						if err == nil {
+							result.WriteString(fmt.Sprintf("\n\n=== references/%s ===\n", e.Name()))
+							result.Write(refData)
+						}
+					}
+				}
+			}
+
+			content := result.String()
+			fmt.Fprintf(os.Stderr, "   ✅ Read %d chars (skill + references)\n", len(content))
+			return content, nil
+		})
+}
+
+const builderSystemPrompt = `You are an autonomous Skill Builder agent. You transform knowledge bases into proper, distributable skills. You can also EVOLVE existing skills by merging new knowledge.
 
 MANDATORY WORKFLOW:
 1. FIRST call find_skill("skill creator") to discover the skill-creator skill.
 2. Install it if needed with install_skill.
 3. Call load_skill("skill-creator") to read its FULL instructions.
-4. Read the target knowledge base with read_knowledge_base.
-5. TRANSFORM the KB into a proper skill following skill-creator guidelines.
-6. Write the skill with write_skill.
+4. If evolving an existing skill, call read_existing_skill to load the baseline.
+5. Read the target knowledge base with read_knowledge_base.
+6. TRANSFORM or EVOLVE into a proper skill following skill-creator guidelines.
+7. Write the skill with write_skill.
 
 TRANSFORMATION RULES:
 - The skill is NOT a copy of the KB. It is a focused, actionable guide.
@@ -290,6 +368,13 @@ TRANSFORMATION RULES:
 - Preserve ALL practical content: code, commands, detection steps.
 - Structure as workflows: "When X, do Y" or "To achieve X, do 1-2-3".
 - Use imperative form: "Check", "Validate", "Run".
+
+EVOLUTION RULES (when evolving an existing skill):
+- NEVER remove content from the existing skill.
+- Add new knowledge from the KB while preserving the original structure.
+- Merge overlapping sections intelligently — keep both examples.
+- Update the frontmatter description to reflect expanded coverage.
+- Add a Changelog entry noting what was evolved.
 
 RULES:
 - You MUST start with find_skill to discover skill-creator — do not skip.

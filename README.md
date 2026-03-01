@@ -292,6 +292,26 @@ export GITHUB_TOKEN=ghp_xxx
 
 **Valid config keys:** `auth-method`, `copilot-url`, `output`, `model`, `extract-model`, `curate-model`, `build-model`, `github-repo`, `github-token`
 
+## Skill Evolution
+
+Evolve existing skills with new knowledge instead of creating from scratch:
+
+```bash
+# CLI: evolve a specific skill with new content
+toskill run --evolve --skill-name my-skill https://example.com/new-article
+
+# Build phase only: evolve from an existing knowledge base
+toskill build --evolve --skill-name my-skill new-kb-name
+```
+
+In **interactive mode**, the wizard asks whether to create a new skill or evolve an existing one, and lists available skills to choose from.
+
+**How evolution works:**
+- Reads the existing SKILL.md and all references
+- Merges new knowledge from the knowledge base
+- Preserves all existing content (never removes)
+- Adds a changelog entry noting what was added
+
 ## Output Structure
 
 ```
@@ -384,6 +404,7 @@ pkg/builder/builder.go         # Skill builder agent
 pkg/tools/tools.go             # Shared agent tools (find/install/load skill, run command)
 pkg/ghstore/ghstore.go         # GitHub REST API storage client
 pkg/ghauth/ghauth.go           # GitHub CLI auth integration
+pkg/headless/headless.go       # Auto-start headless Copilot CLI server
 pkg/interactive/interactive.go # Interactive wizard (charmbracelet/huh)
 ```
 
