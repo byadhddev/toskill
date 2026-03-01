@@ -290,7 +290,36 @@ export TOSKILL_MODEL=claude-opus-4.6
 export GITHUB_TOKEN=ghp_xxx
 ```
 
-**Valid config keys:** `auth-method`, `copilot-url`, `output`, `model`, `extract-model`, `curate-model`, `build-model`, `github-repo`, `github-token`
+**Valid config keys:** `auth-method`, `copilot-url`, `output`, `model`, `extract-model`, `curate-model`, `build-model`, `github-repo`, `github-token`, `redact-paths`
+
+## Path Redaction
+
+Hide your home directory path in all output — useful for screenshots, recordings, and sharing:
+
+```bash
+# One-time via flag
+toskill run --redact https://example.com/article
+
+# Persist in config
+toskill config set redact-paths true
+```
+
+With `--redact`, paths like `/home/user/ai/toskill/skill-store/skills/...` become `~/ai/toskill/skill-store/skills/...`.
+
+## Token Usage Tracking
+
+toskill tracks token consumption across all pipeline phases and displays a summary at the end:
+
+```
+📊 Token Usage
+   Extract: 15.2K in / 3.1K out (cache: 8.0K read) [2 premium req]
+   Curate:  8.4K in / 2.0K out [1 premium req]
+   Build:   22.1K in / 5.8K out (cache: 12.0K read) [3 premium req]
+   ─────────────────────────────
+   Total: 45.7K in / 10.9K out (cache: 20.0K read) [6 premium reqs]
+```
+
+Use `--verbose` for per-turn token breakdowns during execution.
 
 ## Skill Evolution
 

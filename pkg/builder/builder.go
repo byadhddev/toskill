@@ -66,7 +66,10 @@ func Run(ctx context.Context, client *copilot.Client, cfg config.Config, kbName 
 			fmt.Fprintf(os.Stderr, "🔄 Turn started\n")
 		}
 		if event.Data.ModelMetrics != nil || event.Data.TotalPremiumRequests != nil {
-			tools.EmitUsage(event)
+			tools.GlobalTracker.Track("build", event)
+			if cfg.Verbose {
+				tools.EmitUsage(event)
+			}
 		}
 	})
 	defer unsubscribe()
@@ -156,7 +159,10 @@ func RunAll(ctx context.Context, client *copilot.Client, cfg config.Config) ([]s
 			fmt.Fprintf(os.Stderr, "🔄 Turn started\n")
 		}
 		if event.Data.ModelMetrics != nil || event.Data.TotalPremiumRequests != nil {
-			tools.EmitUsage(event)
+			tools.GlobalTracker.Track("build", event)
+			if cfg.Verbose {
+				tools.EmitUsage(event)
+			}
 		}
 	})
 	defer unsubscribe()
@@ -275,7 +281,7 @@ func writeSkillTool(skillsDir string) copilot.Tool {
 			}
 
 			skillPath := filepath.Join(skillDir, "SKILL.md")
-			fmt.Fprintf(os.Stderr, "💾 Writing skill: %s\n", skillPath)
+			fmt.Fprintf(os.Stderr, "💾 Writing skill: %s\n", tools.Redact(skillPath))
 			if err := os.WriteFile(skillPath, []byte(p.SkillMD), 0644); err != nil {
 				return "", fmt.Errorf("failed to write SKILL.md: %w", err)
 			}
@@ -295,7 +301,7 @@ func writeSkillTool(skillsDir string) copilot.Tool {
 			}
 
 			writtenSkillPath = skillPath
-			fmt.Fprintf(os.Stderr, "   ✅ Skill written: %s (%d chars)\n", skillPath, len(p.SkillMD))
+			fmt.Fprintf(os.Stderr, "   ✅ Skill written: %s (%d chars)\n", tools.Redact(skillPath), len(p.SkillMD))
 
 			result := fmt.Sprintf("Skill '%s' written to %s (%d chars)", p.Name, skillDir, len(p.SkillMD))
 			if len(p.References) > 0 {

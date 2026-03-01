@@ -20,6 +20,7 @@ import (
 	"github.com/byadhddev/toskill/pkg/ghstore"
 	"github.com/byadhddev/toskill/pkg/headless"
 	"github.com/byadhddev/toskill/pkg/interactive"
+	"github.com/byadhddev/toskill/pkg/tools"
 )
 
 var version = "dev"
@@ -59,6 +60,7 @@ func main() {
 	byokKey := fs.String("byok-key", "", "BYOK API key (with --auth byok)")
 	evolve := fs.Bool("evolve", false, "Evolve an existing skill instead of creating new")
 	skillName := fs.String("skill-name", "", "Name of existing skill to evolve (with --evolve)")
+	redact := fs.Bool("redact", false, "Redact home directory paths in output (show ~ instead)")
 	fs.Parse(os.Args[2:])
 
 	cfg := config.DefaultConfig()
@@ -107,6 +109,10 @@ func main() {
 		cfg.SkillMode = "evolve"
 		cfg.EvolveSkill = *skillName
 	}
+	if *redact {
+		cfg.RedactPaths = true
+	}
+	tools.SetRedact(cfg.RedactPaths)
 
 	// GitHub storage setup
 	ghToken := *githubToken
@@ -205,9 +211,9 @@ func runPipeline(client *copilot.Client, cfg config.Config, store *ghstore.GitHu
 	fmt.Fprintf(os.Stderr, "🚀 Starting full pipeline for %d URL(s)\n", len(urls))
 	if store != nil {
 		fmt.Fprintf(os.Stderr, "   Storage: GitHub (%s/%s)\n", store.Owner(), store.Repo())
-		fmt.Fprintf(os.Stderr, "   Working dir: %s\n", cfg.OutputDir)
+		fmt.Fprintf(os.Stderr, "   Working dir: %s\n", cfg.Redact(cfg.OutputDir))
 	} else {
-		fmt.Fprintf(os.Stderr, "   Output: %s\n", cfg.OutputDir)
+		fmt.Fprintf(os.Stderr, "   Output: %s\n", cfg.Redact(cfg.OutputDir))
 	}
 	fmt.Fprintf(os.Stderr, "   Model: %s\n", cfg.Model)
 	if cfg.SkillMode == "evolve" {
@@ -247,7 +253,7 @@ func runPipeline(client *copilot.Client, cfg config.Config, store *ghstore.GitHu
 			continue
 		}
 		articlePaths = append(articlePaths, articlePath)
-		fmt.Fprintf(os.Stderr, "📄 Saved: %s\n", articlePath)
+		fmt.Fprintf(os.Stderr, "📄 Saved: %s\n", cfg.Redact(articlePath))
 
 		// Commit to GitHub
 		if store != nil {
@@ -271,7 +277,7 @@ func runPipeline(client *copilot.Client, cfg config.Config, store *ghstore.GitHu
 	if err != nil {
 		return fmt.Errorf("curation failed: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "\n✅ Knowledge base: %s\n", kbPath)
+	fmt.Fprintf(os.Stderr, "\n✅ Knowledge base: %s\n", cfg.Redact(kbPath))
 
 	// Commit KB to GitHub
 	if store != nil {
@@ -294,7 +300,7 @@ func runPipeline(client *copilot.Client, cfg config.Config, store *ghstore.GitHu
 	if err != nil {
 		return fmt.Errorf("skill building failed: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "\n✅ Skill built: %s\n", skillPath)
+	fmt.Fprintf(os.Stderr, "\n✅ Skill built: %s\n", cfg.Redact(skillPath))
 
 	// Commit skill to GitHub
 	if store != nil {
@@ -326,11 +332,12 @@ func runPipeline(client *copilot.Client, cfg config.Config, store *ghstore.GitHu
 	fmt.Fprintf(os.Stderr, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Fprintf(os.Stderr, "📊 Pipeline Summary\n")
 	fmt.Fprintf(os.Stderr, "   Articles: %d extracted\n", len(articlePaths))
-	fmt.Fprintf(os.Stderr, "   KB:       %s\n", kbPath)
-	fmt.Fprintf(os.Stderr, "   Skill:    %s\n", skillPath)
+	fmt.Fprintf(os.Stderr, "   KB:       %s\n", cfg.Redact(kbPath))
+	fmt.Fprintf(os.Stderr, "   Skill:    %s\n", cfg.Redact(skillPath))
 	if store != nil {
 		fmt.Fprintf(os.Stderr, "   GitHub:   https://github.com/%s/%s\n", store.Owner(), store.Repo())
 	}
+	tools.GlobalTracker.PrintSummary()
 	fmt.Fprintf(os.Stderr, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
 	return nil
@@ -350,7 +357,7 @@ func runExtract(client *copilot.Client, cfg config.Config, urls []string) error 
 			fmt.Fprintf(os.Stderr, "⚠️  Failed to save: %v\n", err)
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "📄 Saved: %s (%d chars)\n", articlePath, len(content))
+		fmt.Fprintf(os.Stderr, "📄 Saved: %s (%d chars)\n", cfg.Redact(articlePath), len(content))
 		// Output path to stdout for piping
 		fmt.Println(articlePath)
 	}
@@ -394,7 +401,7 @@ func runCurate(client *copilot.Client, cfg config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "✅ Knowledge base: %s\n", kbPath)
+	fmt.Fprintf(os.Stderr, "✅ Knowledge base: %s\n", cfg.Redact(kbPath))
 	fmt.Println(kbPath)
 	return nil
 }
@@ -419,7 +426,7 @@ func runBuild(client *copilot.Client, cfg config.Config, args []string) error {
 			fmt.Fprintf(os.Stderr, "❌ Failed to build %s: %v\n", kbName, err)
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "✅ Skill built: %s\n", skillPath)
+		fmt.Fprintf(os.Stderr, "✅ Skill built: %s\n", cfg.Redact(skillPath))
 		fmt.Println(skillPath)
 	}
 	return nil
@@ -427,7 +434,7 @@ func runBuild(client *copilot.Client, cfg config.Config, args []string) error {
 
 func runStatus(cfg config.Config) error {
 	fmt.Fprintf(os.Stderr, "📊 Skill Builder Status\n")
-	fmt.Fprintf(os.Stderr, "   Output: %s\n\n", cfg.OutputDir)
+	fmt.Fprintf(os.Stderr, "   Output: %s\n\n", cfg.Redact(cfg.OutputDir))
 
 	// Articles
 	articles := listDir(cfg.ArticlesDir())
@@ -841,6 +848,7 @@ func runInteractive() {
 	}
 	cfg.SkillMode = result.SkillMode
 	cfg.EvolveSkill = result.EvolveSkill
+	tools.SetRedact(cfg.RedactPaths)
 
 	// GitHub storage
 	var store *ghstore.GitHubStore
@@ -916,6 +924,7 @@ Flags:
   --github-token <tok>     GitHub token for storage (or $GITHUB_TOKEN)
   --evolve                 Evolve an existing skill instead of creating new
   --skill-name <name>      Name of existing skill to evolve (with --evolve)
+  --redact                 Replace home directory with ~ in all output paths
   --verbose                Enable verbose output
 
 Examples:

@@ -72,7 +72,10 @@ func browseURL(ctx context.Context, client *copilot.Client, cfg config.Config, u
 			fmt.Fprintf(os.Stderr, "🔄 Turn started\n")
 		}
 		if event.Data.ModelMetrics != nil || event.Data.TotalPremiumRequests != nil {
-			tools.EmitUsage(event)
+			tools.GlobalTracker.Track("extract", event)
+			if cfg.Verbose {
+				tools.EmitUsage(event)
+			}
 		}
 	})
 	defer unsubscribe()

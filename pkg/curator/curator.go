@@ -53,7 +53,10 @@ func Run(ctx context.Context, client *copilot.Client, cfg config.Config, article
 			fmt.Fprintf(os.Stderr, "🔄 Turn started\n")
 		}
 		if event.Data.ModelMetrics != nil || event.Data.TotalPremiumRequests != nil {
-			tools.EmitUsage(event)
+			tools.GlobalTracker.Track("curate", event)
+			if cfg.Verbose {
+				tools.EmitUsage(event)
+			}
 		}
 	})
 	defer unsubscribe()
@@ -103,7 +106,7 @@ func readArticleTool() copilot.Tool {
 			if p.Path == "" {
 				return "", fmt.Errorf("path is required")
 			}
-			fmt.Fprintf(os.Stderr, "📄 Reading article: %s\n", p.Path)
+			fmt.Fprintf(os.Stderr, "📄 Reading article: %s\n", tools.Redact(p.Path))
 
 			data, err := os.ReadFile(p.Path)
 			if err != nil {
@@ -208,7 +211,7 @@ func writeKnowledgeBaseTool(kbDir string) copilot.Tool {
 			}
 			outPath := filepath.Join(dir, "KB.md")
 
-			fmt.Fprintf(os.Stderr, "💾 Writing KB: %s\n", outPath)
+			fmt.Fprintf(os.Stderr, "💾 Writing KB: %s\n", tools.Redact(outPath))
 			if err := os.WriteFile(outPath, []byte(p.Content), 0644); err != nil {
 				return "", fmt.Errorf("failed to write KB: %w", err)
 			}

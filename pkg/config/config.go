@@ -36,6 +36,9 @@ type Config struct {
 	// Skill mode
 	SkillMode    string // "new" or "evolve" (default: "new")
 	EvolveSkill  string // Name of existing skill to evolve (for SkillMode "evolve")
+
+	// Display
+	RedactPaths bool // Replace $HOME with ~ in all output paths
 }
 
 // ModelFor returns the model to use for a given phase.
@@ -99,6 +102,9 @@ func DefaultConfig() Config {
 		if fileCfg["auth-method"] != "" {
 			cfg.AuthMethod = fileCfg["auth-method"]
 		}
+		if fileCfg["redact-paths"] == "true" {
+			cfg.RedactPaths = true
+		}
 	}
 
 	// Env vars override config file
@@ -138,6 +144,21 @@ func (c Config) EnsureDirs() error {
 		}
 	}
 	return nil
+}
+
+// Redact replaces the user's home directory with ~ when RedactPaths is enabled.
+func (c Config) Redact(path string) string {
+	if !c.RedactPaths {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if strings.HasPrefix(path, home) {
+		return "~" + path[len(home):]
+	}
+	return path
 }
 
 // --- Config File ---

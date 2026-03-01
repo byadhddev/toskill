@@ -12,6 +12,27 @@ import (
 	copilot "github.com/github/copilot-sdk/go"
 )
 
+// redactEnabled controls path redaction in tool output.
+var redactEnabled bool
+
+// SetRedact enables/disables home directory path redaction in tool output.
+func SetRedact(enabled bool) { redactEnabled = enabled }
+
+// Redact replaces home dir with ~ when redaction is enabled. Exported for use by other packages.
+func Redact(path string) string {
+	if !redactEnabled {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if strings.HasPrefix(path, home) {
+		return "~" + path[len(home):]
+	}
+	return path
+}
+
 // FindSkillTool searches the open skills ecosystem.
 func FindSkillTool() copilot.Tool {
 	type Params struct {
@@ -100,7 +121,7 @@ func LoadSkillTool(dataDir string) copilot.Tool {
 			for _, path := range searchPaths {
 				data, err := os.ReadFile(path)
 				if err == nil {
-					fmt.Fprintf(os.Stderr, "   ✅ Loaded from: %s\n", path)
+					fmt.Fprintf(os.Stderr, "   ✅ Loaded from: %s\n", Redact(path))
 					content := string(data)
 
 					refsDir := filepath.Join(filepath.Dir(path), "references")
