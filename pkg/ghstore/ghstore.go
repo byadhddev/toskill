@@ -186,3 +186,142 @@ func (s *GitHubStore) Owner() string { return s.owner }
 
 // Repo returns the repo name.
 func (s *GitHubStore) Repo() string { return s.repo }
+
+// DeleteFile deletes a file from the repo.
+func (s *GitHubStore) DeleteFile(path, message string) error {
+	if err := s.resolveOwner(); err != nil {
+		return err
+	}
+	if message == "" {
+		message = "Delete " + path
+	}
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", s.owner, s.repo, path)
+
+	// Get sha first
+	req, _ := http.NewRequest("GET", url+"?ref="+s.branch, nil)
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to get file: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 {
+		return nil // already gone
+	}
+	var existing struct {
+		SHA string `json:"sha"`
+	}
+	json.NewDecoder(resp.Body).Decode(&existing)
+
+	// Delete
+	bodyJSON, _ := json.Marshal(map[string]string{
+		"message": message,
+		"sha":     existing.SHA,
+		"branch":  s.branch,
+	})
+	req, _ = http.NewRequest("DELETE", url, strings.NewReader(string(bodyJSON)))
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete failed (%d): %s", resp.StatusCode, string(b))
+	}
+	return nil
+}
+
+// ListDir lists files in a directory of the repo.
+func (s *GitHubStore) ListDir(path string) ([]string, error) {
+	if err := s.resolveOwner(); err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s", s.owner, s.repo, path, s.branch)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 {
+		return nil, nil
+	}
+
+	var items []struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+	}
+	json.NewDecoder(resp.Body).Decode(&items)
+
+	var paths []string
+	for _, item := range items {
+		paths = append(paths, item.Path)
+	}
+	return paths, nil
+}
+
+// DeleteDir recursively deletes all files in a directory.
+func (s *GitHubStore) DeleteDir(dirPath, message string) error {
+	files, err := s.listAllFiles(dirPath)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		if err := s.DeleteFile(f, message); err != nil {
+			return fmt.Errorf("failed to delete %s: %w", f, err)
+		}
+	}
+	return nil
+}
+
+// listAllFiles recursively lists all files under a path.
+func (s *GitHubStore) listAllFiles(path string) ([]string, error) {
+	if err := s.resolveOwner(); err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s", s.owner, s.repo, path, s.branch)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 {
+		return nil, nil
+	}
+
+	var items []struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+	}
+	json.NewDecoder(resp.Body).Decode(&items)
+
+	var files []string
+	for _, item := range items {
+		if item.Type == "file" {
+			files = append(files, item.Path)
+		} else if item.Type == "dir" {
+			sub, err := s.listAllFiles(item.Path)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, sub...)
+		}
+	}
+	return files, nil
+}

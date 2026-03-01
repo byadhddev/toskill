@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/huh"
 	copilot "github.com/github/copilot-sdk/go"
 
 	"github.com/byadhddev/toskill/pkg/builder"
@@ -139,6 +140,12 @@ func main() {
 
 	case "status":
 		err = runStatus(cfg)
+
+	case "remove", "rm":
+		err = runRemove(cfg, store)
+
+	case "reset":
+		err = runReset(cfg, store)
 
 	case "config":
 		err = runConfig(args)
@@ -410,6 +417,195 @@ func runStatus(cfg config.Config) error {
 	return nil
 }
 
+func runRemove(cfg config.Config, store *ghstore.GitHubStore) error {
+	// Collect all artifacts
+	type artifact struct {
+		Category string // "article", "knowledge-base", "skill"
+		Name     string
+		LocalDir string
+		GHPrefix string
+	}
+
+	var all []artifact
+	for _, a := range listDir(cfg.ArticlesDir()) {
+		all = append(all, artifact{"article", a, filepath.Join(cfg.ArticlesDir(), a), "articles/" + a})
+	}
+	for _, kb := range listDirs(cfg.KnowledgeBasesDir()) {
+		all = append(all, artifact{"knowledge-base", kb, filepath.Join(cfg.KnowledgeBasesDir(), kb), "knowledge-bases/" + kb})
+	}
+	for _, s := range listDirs(cfg.SkillsDir()) {
+		all = append(all, artifact{"skill", s, filepath.Join(cfg.SkillsDir(), s), "skills/" + s})
+	}
+
+	if len(all) == 0 {
+		fmt.Fprintf(os.Stderr, "📭 Nothing to remove — store is empty.\n")
+		return nil
+	}
+
+	// Build options for multi-select
+	var options []huh.Option[int]
+	for i, a := range all {
+		icon := map[string]string{"article": "📄", "knowledge-base": "📚", "skill": "🛠️"}[a.Category]
+		label := fmt.Sprintf("%s %s (%s)", icon, a.Name, a.Category)
+		options = append(options, huh.NewOption(label, i))
+	}
+
+	var selected []int
+	err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[int]().
+				Title("🗑️  Select items to remove").
+				Description("Space to toggle, Enter to confirm").
+				Options(options...).
+				Value(&selected),
+		),
+	).WithTheme(huh.ThemeCharm()).Run()
+	if err != nil {
+		return err
+	}
+
+	if len(selected) == 0 {
+		fmt.Fprintf(os.Stderr, "Nothing selected.\n")
+		return nil
+	}
+
+	// Confirm
+	var confirm bool
+	targets := make([]string, len(selected))
+	for i, idx := range selected {
+		targets[i] = all[idx].Name
+	}
+	err = huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title(fmt.Sprintf("Delete %d item(s)?", len(selected))).
+				Description(strings.Join(targets, ", ")).
+				Affirmative("Yes, delete").
+				Negative("Cancel").
+				Value(&confirm),
+		),
+	).WithTheme(huh.ThemeCharm()).Run()
+	if err != nil || !confirm {
+		fmt.Fprintf(os.Stderr, "Cancelled.\n")
+		return nil
+	}
+
+	// Delete
+	for _, idx := range selected {
+		a := all[idx]
+		// Local
+		if err := os.RemoveAll(a.LocalDir); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Local delete failed for %s: %v\n", a.Name, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "🗑️  Removed local: %s\n", a.Name)
+		}
+		// GitHub
+		if store != nil {
+			if err := store.DeleteDir(a.GHPrefix, "Remove: "+a.Name); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠️  GitHub delete failed for %s: %v\n", a.Name, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "   → Removed from GitHub: %s\n", a.GHPrefix)
+			}
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "\n✅ Removed %d item(s)\n", len(selected))
+	return nil
+}
+
+func runReset(cfg config.Config, store *ghstore.GitHubStore) error {
+	// Count artifacts
+	articles := listDir(cfg.ArticlesDir())
+	kbs := listDirs(cfg.KnowledgeBasesDir())
+	skills := listDirs(cfg.SkillsDir())
+	total := len(articles) + len(kbs) + len(skills)
+
+	summary := fmt.Sprintf("Local: %d articles, %d KBs, %d skills in %s",
+		len(articles), len(kbs), len(skills), cfg.OutputDir)
+	if store != nil {
+		summary += fmt.Sprintf("\nGitHub: %s/%s", store.Owner(), store.Repo())
+	}
+
+	if total == 0 && store == nil {
+		fmt.Fprintf(os.Stderr, "📭 Nothing to reset — store is already empty.\n")
+		return nil
+	}
+
+	// What to reset
+	resetChoices := []huh.Option[string]{
+		huh.NewOption("Local store only", "local"),
+	}
+	if store != nil {
+		resetChoices = append(resetChoices,
+			huh.NewOption("GitHub repo only", "github"),
+			huh.NewOption("Both local and GitHub", "both"),
+		)
+	}
+
+	var resetTarget string
+	err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("⚠️  Reset — delete all artifacts").
+				Description(summary).
+				Options(resetChoices...).
+				Value(&resetTarget),
+		),
+	).WithTheme(huh.ThemeCharm()).Run()
+	if err != nil {
+		return err
+	}
+
+	var confirm bool
+	confirmMsg := "This will permanently delete all "
+	switch resetTarget {
+	case "local":
+		confirmMsg += "local artifacts"
+	case "github":
+		confirmMsg += fmt.Sprintf("files in %s/%s", store.Owner(), store.Repo())
+	case "both":
+		confirmMsg += fmt.Sprintf("local artifacts AND files in %s/%s", store.Owner(), store.Repo())
+	}
+
+	err = huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Are you sure?").
+				Description(confirmMsg).
+				Affirmative("Yes, reset everything").
+				Negative("Cancel").
+				Value(&confirm),
+		),
+	).WithTheme(huh.ThemeCharm()).Run()
+	if err != nil || !confirm {
+		fmt.Fprintf(os.Stderr, "Cancelled.\n")
+		return nil
+	}
+
+	// Execute reset
+	if resetTarget == "local" || resetTarget == "both" {
+		for _, dir := range []string{cfg.ArticlesDir(), cfg.KnowledgeBasesDir(), cfg.SkillsDir()} {
+			os.RemoveAll(dir)
+			os.MkdirAll(dir, 0755)
+		}
+		fmt.Fprintf(os.Stderr, "🗑️  Local store cleared: %s\n", cfg.OutputDir)
+	}
+
+	if (resetTarget == "github" || resetTarget == "both") && store != nil {
+		fmt.Fprintf(os.Stderr, "🗑️  Clearing GitHub repo...\n")
+		for _, prefix := range []string{"articles", "knowledge-bases", "skills"} {
+			if err := store.DeleteDir(prefix, "Reset: clear "+prefix); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠️  Failed to clear %s: %v\n", prefix, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "   → Cleared %s/\n", prefix)
+			}
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "\n✅ Reset complete\n")
+	return nil
+}
+
 // --- Helpers ---
 
 func runConfig(args []string) error {
@@ -590,6 +786,8 @@ Commands:
   build <kb-name>           Build a skill from a knowledge base
   build --auto              Build skills from all knowledge bases
   status                    Show pipeline state (articles, KBs, skills)
+  remove                    Interactively select and delete artifacts
+  reset                     Wipe all artifacts (local and/or GitHub)
   config show               Show current configuration
   config set <key> <value>  Set a config value
   config path               Print config file path

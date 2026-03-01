@@ -114,6 +114,8 @@ Commands:
   build <kb-name>           Build a skill from a knowledge base
   build --auto              Build skills from all knowledge bases
   status                    Show current pipeline state
+  remove                    Interactively select and delete artifacts
+  reset                     Wipe all artifacts (local and/or GitHub)
   config show               Show configuration
   config set <key> <value>  Set a persistent config value
   version                   Print version
@@ -152,6 +154,24 @@ If `gh` CLI is not installed or not authenticated, toskill falls back to:
 - `knowledge-bases/{name}/KB.md` — curated knowledge base
 - `skills/{name}/SKILL.md` — distributable skill
 - `skills/{name}/references/*.md` — supporting reference material
+
+## Managing Artifacts
+
+### Remove specific items
+
+```bash
+toskill remove
+```
+
+Interactive multi-select lets you pick individual articles, knowledge bases, or skills to delete — from both local and GitHub simultaneously. Supports toggle, filter, and select-all.
+
+### Reset everything
+
+```bash
+toskill reset
+```
+
+Choose to wipe local store only, GitHub repo only, or both. Includes a confirmation step before any deletion.
 
 ## Per-Phase Models
 
