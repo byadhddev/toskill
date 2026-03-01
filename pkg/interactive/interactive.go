@@ -131,8 +131,8 @@ func RunWizard(savedGitHubRepo string, modelOptions []huh.Option[string]) (*RunC
 
 	// --- Page 1: Auth Method ---
 	authOptions := []huh.Option[string]{
-		huh.NewOption("Auto — SDK manages CLI (Recommended)", config.AuthAuto),
-		huh.NewOption("External CLI — connect to headless server", config.AuthCLIUrl),
+		huh.NewOption("Copilot CLI — auto-start headless server (Recommended)", config.AuthAuto),
+		huh.NewOption("External CLI — connect to existing headless server", config.AuthCLIUrl),
 		huh.NewOption("GitHub Token — explicit PAT / OAuth token", config.AuthGitHubToken),
 		huh.NewOption("Environment Variable — COPILOT_GITHUB_TOKEN / GH_TOKEN", config.AuthEnvVar),
 		huh.NewOption("BYOK — Bring Your Own Key (OpenAI / Anthropic / Azure)", config.AuthBYOK),

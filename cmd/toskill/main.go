@@ -4,8 +4,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,7 +24,10 @@ import (
 	"github.com/byadhddev/toskill/pkg/interactive"
 )
 
-var version = "dev"
+var (
+	version       = "dev"
+	headlessProc  *os.Process // background headless CLI process we started
+)
 
 func main() {
 	if len(os.Args) < 2 {
@@ -184,9 +190,11 @@ func main() {
 	}
 
 	if err != nil {
+		stopHeadlessCLI()
 		fatal("Error: %v", err)
 	}
 
+	stopHeadlessCLI()
 	fmt.Fprintf(os.Stderr, "\n🎉 Done.\n")
 }
 
@@ -676,15 +684,83 @@ func runConfig(args []string) error {
 	return fmt.Errorf("unknown config subcommand: %s (valid: show, set, path)", args[0])
 }
 
+// ensureHeadlessCLI starts a headless copilot CLI server if one isn't already running on the port.
+// Returns the port the server is on.
+func ensureHeadlessCLI(addr string) string {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = "localhost"
+		portStr = addr
+	}
+	if host == "" {
+		host = "localhost"
+	}
+
+	// Check if already running
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, portStr), 2*time.Second)
+	if err == nil {
+		conn.Close()
+		fmt.Fprintf(os.Stderr, "🔌 Copilot CLI already running at %s:%s\n", host, portStr)
+		return net.JoinHostPort(host, portStr)
+	}
+
+	// Find a free port if the requested one isn't available or is 0
+	port, _ := strconv.Atoi(portStr)
+	if port == 0 {
+		port = 44321
+	}
+
+	// Start headless server as background process
+	fmt.Fprintf(os.Stderr, "🚀 Starting Copilot CLI (headless) on port %d...\n", port)
+	cmd := exec.Command("copilot", "--headless", "--port", strconv.Itoa(port))
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Failed to start headless CLI: %v\n", err)
+		fmt.Fprintf(os.Stderr, "   Ensure 'copilot' is installed: https://github.com/github/copilot-cli\n\n")
+		os.Exit(1)
+	}
+	headlessProc = cmd.Process
+
+	// Wait for the server to be ready
+	deadline := time.Now().Add(15 * time.Second)
+	target := net.JoinHostPort(host, strconv.Itoa(port))
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", target, 500*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			fmt.Fprintf(os.Stderr, "   ✅ Copilot CLI ready (pid %d)\n", cmd.Process.Pid)
+			return target
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	fmt.Fprintf(os.Stderr, "❌ Copilot CLI didn't become ready in 15s\n")
+	cmd.Process.Kill()
+	headlessProc = nil
+	os.Exit(1)
+	return ""
+}
+
+// stopHeadlessCLI kills the background headless server if we started one.
+func stopHeadlessCLI() {
+	if headlessProc != nil {
+		headlessProc.Kill()
+		headlessProc.Wait()
+		headlessProc = nil
+	}
+}
+
 func createClient(cfg config.Config) *copilot.Client {
 	var opts *copilot.ClientOptions
 
 	switch cfg.AuthMethod {
 	case config.AuthCLIUrl:
-		// Connect to external headless CLI server
-		fmt.Fprintf(os.Stderr, "🔌 Connecting to Copilot CLI at %s...\n", cfg.CopilotURL)
+		// Auto-start headless if not already running, then connect
+		addr := ensureHeadlessCLI(cfg.CopilotURL)
+		cfg.CopilotURL = addr
 		opts = &copilot.ClientOptions{
-			CLIUrl:   cfg.CopilotURL,
+			CLIUrl:   addr,
 			LogLevel: "error",
 		}
 
@@ -713,9 +789,11 @@ func createClient(cfg config.Config) *copilot.Client {
 		}
 
 	default: // AuthAuto
-		// SDK auto-manages: stored Copilot creds → env vars → gh CLI
-		fmt.Fprintf(os.Stderr, "🔌 Starting Copilot (auto-auth)...\n")
+		// Auto mode: start headless CLI and connect via TCP (stdio transport is unreliable)
+		addr := ensureHeadlessCLI(cfg.CopilotURL)
+		cfg.CopilotURL = addr
 		opts = &copilot.ClientOptions{
+			CLIUrl:   addr,
 			LogLevel: "error",
 		}
 	}
@@ -786,6 +864,7 @@ func listDirs(dir string) []string {
 }
 
 func fatal(format string, args ...interface{}) {
+	stopHeadlessCLI()
 	fmt.Fprintf(os.Stderr, "❌ "+format+"\n", args...)
 	os.Exit(1)
 }
@@ -847,6 +926,7 @@ func runInteractive() {
 	if err := runPipeline(client, cfg, store, result.URLs); err != nil {
 		fatal("Error: %v", err)
 	}
+	stopHeadlessCLI()
 	fmt.Fprintf(os.Stderr, "\n🎉 Done.\n")
 }
 
