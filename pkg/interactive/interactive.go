@@ -36,7 +36,7 @@ type RunConfig struct {
 	BYOKProvider       *copilot.ProviderConfig // for AuthBYOK
 }
 
-// fallbackModels used when Copilot CLI is unreachable.
+// fallbackModels used by legacy FetchModels() only (non-interactive CLI flag mode).
 var fallbackModels = []huh.Option[string]{
 	huh.NewOption("claude-opus-4.6", "claude-opus-4.6"),
 	huh.NewOption("claude-sonnet-4.5", "claude-sonnet-4.5"),
@@ -47,7 +47,8 @@ var fallbackModels = []huh.Option[string]{
 var theme = huh.ThemeCharm()
 
 // FetchModelsWithAuth creates a temporary client using the selected auth method to get models.
-func FetchModelsWithAuth(authMethod string, copilotURL string, githubToken string) []huh.Option[string] {
+// Returns the model list and whether it succeeded (vs fallback).
+func FetchModelsWithAuth(authMethod string, copilotURL string, githubToken string) ([]huh.Option[string], bool) {
 	var opts *copilot.ClientOptions
 
 	switch authMethod {
@@ -63,8 +64,7 @@ func FetchModelsWithAuth(authMethod string, copilotURL string, githubToken strin
 			LogLevel:        "error",
 		}
 	case config.AuthBYOK:
-		// BYOK: models are custom, skip fetching
-		return fallbackModels
+		return nil, true // BYOK uses custom model names
 	default: // AuthAuto, AuthEnvVar
 		opts = &copilot.ClientOptions{
 			LogLevel: "error",
@@ -76,14 +76,15 @@ func FetchModelsWithAuth(authMethod string, copilotURL string, githubToken strin
 	defer cancel()
 
 	if err := client.Start(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "   ⚠️  Could not connect (%v) — using fallback model list\n", err)
-		return fallbackModels
+		fmt.Fprintf(os.Stderr, "   ❌ Could not connect: %v\n", err)
+		return nil, false
 	}
 	defer client.Stop()
 
 	models, err := client.ListModels(ctx)
 	if err != nil || len(models) == 0 {
-		return fallbackModels
+		fmt.Fprintf(os.Stderr, "   ❌ No models returned\n")
+		return nil, false
 	}
 
 	options := make([]huh.Option[string], 0, len(models))
@@ -94,12 +95,16 @@ func FetchModelsWithAuth(authMethod string, copilotURL string, githubToken strin
 		}
 		options = append(options, huh.NewOption(label, m.ID))
 	}
-	return options
+	return options, true
 }
 
 // FetchModels connects to Copilot CLI via CLIUrl and returns available models (legacy).
 func FetchModels(copilotURL string) []huh.Option[string] {
-	return FetchModelsWithAuth(config.AuthCLIUrl, copilotURL, "")
+	models, _ := FetchModelsWithAuth(config.AuthCLIUrl, copilotURL, "")
+	if len(models) == 0 {
+		return fallbackModels
+	}
+	return models
 }
 
 // RunWizard launches the interactive configuration wizard.
@@ -257,14 +262,100 @@ func RunWizard(savedGitHubRepo string, modelOptions []huh.Option[string]) (*RunC
 		}
 	}
 
-	// Fetch models dynamically after auth is configured
+	// Fetch models dynamically after auth is configured — retry loop on failure
 	if cfg.AuthMethod != config.AuthBYOK {
-		fmt.Fprintf(os.Stderr, "🔍 Loading available models...\n")
-		fetched := FetchModelsWithAuth(cfg.AuthMethod, cfg.CopilotURL, cfg.GitHubCopilotToken)
-		if len(fetched) > 0 {
-			modelOptions = fetched
+		for {
+			fmt.Fprintf(os.Stderr, "🔍 Loading available models...\n")
+			fetched, ok := FetchModelsWithAuth(cfg.AuthMethod, cfg.CopilotURL, cfg.GitHubCopilotToken)
+			if ok && len(fetched) > 0 {
+				modelOptions = fetched
+				fmt.Fprintf(os.Stderr, "   ✅ Found %d model(s)\n\n", len(modelOptions))
+				break
+			}
+
+			// Connection failed — ask user what to do
+			fmt.Fprintf(os.Stderr, "\n")
+			var recovery string
+			retryOptions := []huh.Option[string]{
+				huh.NewOption("Switch to External CLI (connect to headless server)", config.AuthCLIUrl),
+				huh.NewOption("Switch to GitHub Token (explicit token)", config.AuthGitHubToken),
+				huh.NewOption("Switch to Environment Variable", config.AuthEnvVar),
+				huh.NewOption("Retry current method", "__retry__"),
+				huh.NewOption("Cancel", "__cancel__"),
+			}
+			err = huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("⚠️  Could not load models with current auth").
+						Description("The AI backend is not reachable. Choose how to proceed:").
+						Options(retryOptions...).
+						Value(&recovery),
+				),
+			).WithTheme(theme).Run()
+			if err != nil {
+				return nil, err
+			}
+
+			if recovery == "__cancel__" {
+				cfg.Confirmed = false
+				return cfg, nil
+			}
+			if recovery == "__retry__" {
+				continue
+			}
+
+			// User switched auth method — collect new details
+			cfg.AuthMethod = recovery
+			switch recovery {
+			case config.AuthCLIUrl:
+				cfg.CopilotURL = "localhost:44321"
+				err = huh.NewForm(
+					huh.NewGroup(
+						huh.NewInput().
+							Title("🔌 Copilot CLI address").
+							Description("Format: host:port").
+							Placeholder("localhost:44321").
+							Value(&cfg.CopilotURL),
+					),
+				).WithTheme(theme).Run()
+				if err != nil {
+					return nil, err
+				}
+			case config.AuthGitHubToken:
+				err = huh.NewForm(
+					huh.NewGroup(
+						huh.NewInput().
+							Title("🔑 GitHub Token").
+							Description("Paste your token (gho_, ghu_, or github_pat_ prefix)").
+							EchoMode(huh.EchoModePassword).
+							Value(&cfg.GitHubCopilotToken).
+							Validate(func(s string) error {
+								if strings.TrimSpace(s) == "" {
+									return fmt.Errorf("token is required")
+								}
+								return nil
+							}),
+					),
+				).WithTheme(theme).Run()
+				if err != nil {
+					return nil, err
+				}
+			case config.AuthEnvVar:
+				found := false
+				for _, key := range []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
+					if os.Getenv(key) != "" {
+						fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(
+							fmt.Sprintf("   ✅ Using %s from environment", key)))
+						found = true
+						break
+					}
+				}
+				if !found {
+					fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(
+						"   ⚠️  No token env var found"))
+				}
+			}
 		}
-		fmt.Fprintf(os.Stderr, "   Found %d model(s)\n\n", len(modelOptions))
 	} else {
 		// BYOK: let user type a custom model name
 		fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(
