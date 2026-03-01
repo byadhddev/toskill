@@ -143,7 +143,7 @@ func listKnowledgeBasesTool(kbDir string) copilot.Tool {
 				if query != "" && !strings.Contains(strings.ToLower(name), query) {
 					continue
 				}
-				skillPath := filepath.Join(kbDir, name, "SKILL.md")
+				skillPath := filepath.Join(kbDir, name, "KB.md")
 				data, err := os.ReadFile(skillPath)
 				if err != nil {
 					continue
@@ -168,14 +168,14 @@ func readKnowledgeBaseTool(kbDir string) copilot.Tool {
 		Name string `json:"name" jsonschema:"Name of the knowledge base to read"`
 	}
 	return copilot.DefineTool("read_knowledge_base",
-		"Read an existing knowledge base. Returns the full SKILL.md content.",
+		"Read an existing knowledge base. Returns the full KB.md content.",
 		func(p Params, inv copilot.ToolInvocation) (string, error) {
 			if p.Name == "" {
 				return "", fmt.Errorf("name is required")
 			}
 			fmt.Fprintf(os.Stderr, "📖 Reading existing KB: %s\n", p.Name)
 
-			path := filepath.Join(kbDir, p.Name, "SKILL.md")
+			path := filepath.Join(kbDir, p.Name, "KB.md")
 			data, err := os.ReadFile(path)
 			if err != nil {
 				if os.IsNotExist(err) {
@@ -194,7 +194,7 @@ func writeKnowledgeBaseTool(kbDir string) copilot.Tool {
 		Content string `json:"content" jsonschema:"The full markdown content of the knowledge base"`
 	}
 	return copilot.DefineTool("write_knowledge_base",
-		"Write or update a knowledge base. Saves as <name>/SKILL.md.",
+		"Write or update a knowledge base. Saves as <name>/KB.md.",
 		func(p Params, inv copilot.ToolInvocation) (string, error) {
 			if p.Name == "" || p.Content == "" {
 				return "", fmt.Errorf("name and content are required")
@@ -204,7 +204,7 @@ func writeKnowledgeBaseTool(kbDir string) copilot.Tool {
 			if err := os.MkdirAll(dir, 0755); err != nil {
 				return "", fmt.Errorf("failed to create KB directory: %w", err)
 			}
-			outPath := filepath.Join(dir, "SKILL.md")
+			outPath := filepath.Join(dir, "KB.md")
 
 			fmt.Fprintf(os.Stderr, "💾 Writing KB: %s\n", outPath)
 			if err := os.WriteFile(outPath, []byte(p.Content), 0644); err != nil {

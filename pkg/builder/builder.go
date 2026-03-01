@@ -174,7 +174,7 @@ func listKnowledgeBasesTool(kbDir string) copilot.Tool {
 				if query != "" && !strings.Contains(strings.ToLower(name), query) {
 					continue
 				}
-				skillPath := filepath.Join(kbDir, name, "SKILL.md")
+				skillPath := filepath.Join(kbDir, name, "KB.md")
 				data, err := os.ReadFile(skillPath)
 				if err != nil {
 					continue
@@ -201,13 +201,13 @@ func readKnowledgeBaseTool(kbDir string) copilot.Tool {
 		Name string `json:"name" jsonschema:"Name of the knowledge base"`
 	}
 	return copilot.DefineTool("read_knowledge_base",
-		"Read a knowledge base. Returns the full SKILL.md content.",
+		"Read a knowledge base. Returns the full KB.md content.",
 		func(p Params, inv copilot.ToolInvocation) (string, error) {
 			if p.Name == "" {
 				return "", fmt.Errorf("name is required")
 			}
 			fmt.Fprintf(os.Stderr, "📖 Reading KB: %s\n", p.Name)
-			path := filepath.Join(kbDir, p.Name, "SKILL.md")
+			path := filepath.Join(kbDir, p.Name, "KB.md")
 			data, err := os.ReadFile(path)
 			if err != nil {
 				if os.IsNotExist(err) {

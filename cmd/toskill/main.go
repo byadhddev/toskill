@@ -232,7 +232,7 @@ func runPipeline(client *copilot.Client, cfg config.Config, store *ghstore.GitHu
 		kbName := filepath.Base(filepath.Dir(kbPath))
 		kbContent, err := os.ReadFile(kbPath)
 		if err == nil {
-			ghURL, err := store.WriteFile("knowledge-bases/"+kbName+"/SKILL.md", string(kbContent), "Curate: "+kbName)
+			ghURL, err := store.WriteFile("knowledge-bases/"+kbName+"/KB.md", string(kbContent), "Curate: "+kbName)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "⚠️  GitHub KB commit failed: %v\n", err)
 			} else {
