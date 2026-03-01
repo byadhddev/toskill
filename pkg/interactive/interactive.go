@@ -13,6 +13,7 @@ import (
 
 	"github.com/byadhddev/toskill/pkg/config"
 	"github.com/byadhddev/toskill/pkg/ghauth"
+	"github.com/byadhddev/toskill/pkg/headless"
 )
 
 // RunConfig holds the collected configuration from the interactive wizard.
@@ -47,14 +48,21 @@ var fallbackModels = []huh.Option[string]{
 var theme = huh.ThemeCharm()
 
 // FetchModelsWithAuth creates a temporary client using the selected auth method to get models.
-// Returns the model list and whether it succeeded (vs fallback).
-func FetchModelsWithAuth(authMethod string, copilotURL string, githubToken string) ([]huh.Option[string], bool) {
+// For Auto/CLIUrl modes, auto-starts a headless CLI server if needed.
+// Returns the model list, whether it succeeded, and the resolved copilot URL.
+func FetchModelsWithAuth(authMethod string, copilotURL string, githubToken string) ([]huh.Option[string], bool, string) {
 	var opts *copilot.ClientOptions
 
 	switch authMethod {
-	case config.AuthCLIUrl:
+	case config.AuthCLIUrl, config.AuthAuto:
+		// Auto-start headless CLI if not running
+		addr := headless.EnsureRunning(copilotURL)
+		if addr == "" {
+			return nil, false, copilotURL
+		}
+		copilotURL = addr
 		opts = &copilot.ClientOptions{
-			CLIUrl:   copilotURL,
+			CLIUrl:   addr,
 			LogLevel: "error",
 		}
 	case config.AuthGitHubToken:
@@ -64,8 +72,8 @@ func FetchModelsWithAuth(authMethod string, copilotURL string, githubToken strin
 			LogLevel:        "error",
 		}
 	case config.AuthBYOK:
-		return nil, true // BYOK uses custom model names
-	default: // AuthAuto, AuthEnvVar
+		return nil, true, copilotURL // BYOK uses custom model names
+	default: // AuthEnvVar
 		opts = &copilot.ClientOptions{
 			LogLevel: "error",
 		}
@@ -77,14 +85,14 @@ func FetchModelsWithAuth(authMethod string, copilotURL string, githubToken strin
 
 	if err := client.Start(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "   ❌ Could not connect: %v\n", err)
-		return nil, false
+		return nil, false, copilotURL
 	}
 	defer client.Stop()
 
 	models, err := client.ListModels(ctx)
 	if err != nil || len(models) == 0 {
 		fmt.Fprintf(os.Stderr, "   ❌ No models returned\n")
-		return nil, false
+		return nil, false, copilotURL
 	}
 
 	options := make([]huh.Option[string], 0, len(models))
@@ -95,12 +103,12 @@ func FetchModelsWithAuth(authMethod string, copilotURL string, githubToken strin
 		}
 		options = append(options, huh.NewOption(label, m.ID))
 	}
-	return options, true
+	return options, true, copilotURL
 }
 
 // FetchModels connects to Copilot CLI via CLIUrl and returns available models (legacy).
 func FetchModels(copilotURL string) []huh.Option[string] {
-	models, _ := FetchModelsWithAuth(config.AuthCLIUrl, copilotURL, "")
+	models, _, _ := FetchModelsWithAuth(config.AuthCLIUrl, copilotURL, "")
 	if len(models) == 0 {
 		return fallbackModels
 	}
@@ -266,9 +274,10 @@ func RunWizard(savedGitHubRepo string, modelOptions []huh.Option[string]) (*RunC
 	if cfg.AuthMethod != config.AuthBYOK {
 		for {
 			fmt.Fprintf(os.Stderr, "🔍 Loading available models...\n")
-			fetched, ok := FetchModelsWithAuth(cfg.AuthMethod, cfg.CopilotURL, cfg.GitHubCopilotToken)
+			fetched, ok, resolvedURL := FetchModelsWithAuth(cfg.AuthMethod, cfg.CopilotURL, cfg.GitHubCopilotToken)
 			if ok && len(fetched) > 0 {
 				modelOptions = fetched
+				cfg.CopilotURL = resolvedURL // update with actual address (headless may have started)
 				fmt.Fprintf(os.Stderr, "   ✅ Found %d model(s)\n\n", len(modelOptions))
 				break
 			}
