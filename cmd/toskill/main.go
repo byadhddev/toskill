@@ -15,6 +15,7 @@ import (
 	"github.com/byadhddev/toskill/pkg/config"
 	"github.com/byadhddev/toskill/pkg/curator"
 	"github.com/byadhddev/toskill/pkg/extractor"
+	"github.com/byadhddev/toskill/pkg/ghauth"
 	"github.com/byadhddev/toskill/pkg/ghstore"
 	"github.com/byadhddev/toskill/pkg/interactive"
 )
@@ -89,6 +90,10 @@ func main() {
 		if ghRepo == "" && fileCfg["github-repo"] != "" {
 			ghRepo = fileCfg["github-repo"]
 		}
+	}
+	// Fallback to gh CLI auth
+	if ghToken == "" && ghRepo != "" {
+		ghToken = ghauth.GetToken()
 	}
 	var store *ghstore.GitHubStore
 	if ghToken != "" && ghRepo != "" {
@@ -545,13 +550,13 @@ func runInteractive() {
 	// GitHub storage
 	var store *ghstore.GitHubStore
 	if result.StorageMode == "github" && result.GitHubRepo != "" {
-		ghToken := os.Getenv("GITHUB_TOKEN")
-		if fileCfg, err := config.LoadConfigFile(); err == nil && ghToken == "" {
-			ghToken = fileCfg["github-token"]
+		ghToken := result.GitHubToken
+		if ghToken == "" {
+			// Fallback: try gh CLI, then env, then config
+			ghToken = ghauth.GetToken()
 		}
 		if ghToken == "" {
-			fmt.Fprintf(os.Stderr, "⚠️  No GitHub token found. Set GITHUB_TOKEN or run: toskill config set github-token <token>\n")
-			fmt.Fprintf(os.Stderr, "   Falling back to local storage.\n\n")
+			fmt.Fprintf(os.Stderr, "⚠️  No GitHub token found. Falling back to local storage.\n\n")
 		} else {
 			store = ghstore.New(ghToken, result.GitHubRepo)
 		}

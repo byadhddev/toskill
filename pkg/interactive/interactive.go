@@ -6,6 +6,8 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/byadhddev/toskill/pkg/ghauth"
 )
 
 // RunConfig holds the collected configuration from the interactive wizard.
@@ -13,6 +15,8 @@ type RunConfig struct {
 	URLs          []string
 	StorageMode   string // "local" or "github"
 	GitHubRepo    string
+	GitHubToken   string
+	CreateRepo    bool   // true if user chose to create a new repo
 	OutputDir     string
 	Model         string
 	ExtractModel  string
@@ -95,26 +99,74 @@ func RunWizard(savedGitHubRepo string) (*RunConfig, error) {
 	}
 
 	if cfg.StorageMode == "github" {
-		if cfg.GitHubRepo == "" {
-			cfg.GitHubRepo = "your-username/toskill-store"
+		// Check gh CLI auth
+		auth := ghauth.Check()
+		if !auth.LoggedIn {
+			fmt.Println()
+			fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(
+				"⚠️  GitHub CLI not authenticated. Let's fix that."))
+			fmt.Println()
+			auth, err = ghauth.Login()
+			if err != nil || !auth.LoggedIn {
+				fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(
+					"❌ GitHub login failed. Falling back to local storage."))
+				cfg.StorageMode = "local"
+			}
 		}
-		err = huh.NewForm(
-			huh.NewGroup(
-				huh.NewInput().
-					Title("GitHub Repository").
-					Description("Format: owner/repo-name").
-					Placeholder("owner/toskill-store").
-					Value(&cfg.GitHubRepo).
-					Validate(func(s string) error {
-						if !strings.Contains(s, "/") {
-							return fmt.Errorf("use format: owner/repo-name")
-						}
-						return nil
-					}),
-			),
-		).WithTheme(theme).Run()
-		if err != nil {
-			return nil, err
+
+		if cfg.StorageMode == "github" {
+			cfg.GitHubToken = auth.Token
+			fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(
+				fmt.Sprintf("✅ Logged in as %s", auth.Username)))
+			fmt.Println()
+
+			// List repos + offer create
+			repos, _ := ghauth.ListRepos(20)
+			repoOptions := []huh.Option[string]{
+				huh.NewOption("+ Create new repository", "__create__"),
+			}
+			for _, r := range repos {
+				repoOptions = append(repoOptions, huh.NewOption(r, r))
+			}
+
+			var repoChoice string
+			err = huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("📂 Select repository").
+						Description("Choose an existing repo or create a new one").
+						Options(repoOptions...).
+						Value(&repoChoice),
+				),
+			).WithTheme(theme).Run()
+			if err != nil {
+				return nil, err
+			}
+
+			if repoChoice == "__create__" {
+				newName := auth.Username + "/toskill-store"
+				err = huh.NewForm(
+					huh.NewGroup(
+						huh.NewInput().
+							Title("New repository name").
+							Placeholder(auth.Username + "/toskill-store").
+							Value(&newName).
+							Validate(func(s string) error {
+								if !strings.Contains(s, "/") {
+									return fmt.Errorf("use format: owner/repo-name")
+								}
+								return nil
+							}),
+					),
+				).WithTheme(theme).Run()
+				if err != nil {
+					return nil, err
+				}
+				cfg.GitHubRepo = newName
+				cfg.CreateRepo = true
+			} else {
+				cfg.GitHubRepo = repoChoice
+			}
 		}
 	}
 
