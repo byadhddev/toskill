@@ -9,10 +9,33 @@ import (
 
 // Config holds shared configuration for all agents.
 type Config struct {
-	CopilotURL string // Copilot CLI server address
-	OutputDir  string // Base output directory (articles/, knowledge-bases/, skills/)
-	Model      string // LLM model to use
-	Verbose    bool   // Enable verbose output
+	CopilotURL    string // Copilot CLI server address
+	OutputDir     string // Base output directory (articles/, knowledge-bases/, skills/)
+	Model         string // LLM model to use (default for all phases)
+	ExtractModel  string // Model override for extraction phase
+	CurateModel   string // Model override for curation phase
+	BuildModel    string // Model override for skill building phase
+	Verbose       bool   // Enable verbose output
+}
+
+// ModelFor returns the model to use for a given phase.
+// Falls back to the default Model if no per-phase override is set.
+func (c Config) ModelFor(phase string) string {
+	switch phase {
+	case "extract":
+		if c.ExtractModel != "" {
+			return c.ExtractModel
+		}
+	case "curate":
+		if c.CurateModel != "" {
+			return c.CurateModel
+		}
+	case "build":
+		if c.BuildModel != "" {
+			return c.BuildModel
+		}
+	}
+	return c.Model
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -34,6 +57,15 @@ func DefaultConfig() Config {
 		}
 		if fileCfg["model"] != "" {
 			cfg.Model = fileCfg["model"]
+		}
+		if fileCfg["extract-model"] != "" {
+			cfg.ExtractModel = fileCfg["extract-model"]
+		}
+		if fileCfg["curate-model"] != "" {
+			cfg.CurateModel = fileCfg["curate-model"]
+		}
+		if fileCfg["build-model"] != "" {
+			cfg.BuildModel = fileCfg["build-model"]
 		}
 	}
 

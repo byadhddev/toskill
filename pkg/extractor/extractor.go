@@ -19,7 +19,7 @@ var extractedContent string
 // Returns the extracted content for each URL (map of url → content).
 func Run(ctx context.Context, client *copilot.Client, cfg config.Config, urls []string) (map[string]string, error) {
 	fmt.Fprintf(os.Stderr, "⚡ Content Extractor\n")
-	fmt.Fprintf(os.Stderr, "   URLs: %d | Model: %s\n\n", len(urls), cfg.Model)
+	fmt.Fprintf(os.Stderr, "   URLs: %d | Model: %s\n\n", len(urls), cfg.ModelFor("extract"))
 
 	results := make(map[string]string)
 
@@ -46,7 +46,7 @@ func browseURL(ctx context.Context, client *copilot.Client, cfg config.Config, u
 
 	dataDir := cfg.OutputDir
 	session, err := client.CreateSession(ctx, &copilot.SessionConfig{
-		Model:               cfg.Model,
+		Model:               cfg.ModelFor("extract"),
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		SystemMessage:       &copilot.SystemMessageConfig{Content: systemPrompt},
 		Tools: []copilot.Tool{

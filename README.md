@@ -44,10 +44,13 @@ make install     # → $GOPATH/bin/toskill
 # 1. Start Copilot CLI in another terminal
 copilot --headless --port 44321
 
-# 2. Run the full pipeline
+# 2. Interactive mode (guided setup)
+toskill
+
+# 3. Or run directly
 toskill run https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/05-Authorization_Testing/04-Testing_for_Insecure_Direct_Object_References
 
-# 3. Check results
+# 4. Check results
 toskill status
 ```
 
@@ -59,10 +62,12 @@ This autonomously:
 ## Usage
 
 ```
+toskill                        Interactive mode (guided setup)
 toskill <command> [flags] [args...]
 
 Commands:
   run <url1> [url2] ...       Full pipeline: extract → curate → build
+  run                         Interactive mode (no URLs → launches wizard)
   extract <url1> [url2] ...   Extract content from URLs
   curate [article-paths]      Curate articles into a knowledge base
   build <kb-name>             Build a skill from a knowledge base
@@ -73,12 +78,43 @@ Commands:
   version                     Print version
 
 Flags:
-  --copilot-url <addr>   Copilot CLI server (default: localhost:44321)
-  --output <dir>         Output directory (default: ./skill-store/)
-  --model <name>         LLM model (default: claude-opus-4.6)
-  --github-repo <repo>   GitHub repo for storage (e.g. 'owner/toskill-store')
-  --github-token <tok>   GitHub token (or $GITHUB_TOKEN)
-  --verbose              Enable verbose output
+  --copilot-url <addr>     Copilot CLI server (default: localhost:44321)
+  --output <dir>           Output directory (default: ./skill-store/)
+  --model <name>           LLM model for all phases (default: claude-opus-4.6)
+  --extract-model <name>   Model override for extraction phase
+  --curate-model <name>    Model override for curation phase
+  --build-model <name>     Model override for skill building phase
+  --github-repo <repo>     GitHub repo for storage (e.g. 'owner/toskill-store')
+  --github-token <tok>     GitHub token (or $GITHUB_TOKEN)
+  --verbose                Enable verbose output
+```
+
+## Interactive Mode
+
+Run `toskill` with no arguments for a guided setup wizard:
+
+```bash
+toskill
+```
+
+The wizard walks you through:
+1. **URLs** — Paste one or more URLs to process
+2. **Storage** — Choose Local or GitHub repository
+3. **Model** — Select the LLM model
+4. **Per-phase models** — Optionally use different models for each phase
+5. **Confirm** — Review settings and run
+
+## Per-Phase Models
+
+Use cheaper models for extraction and premium models for skill building:
+
+```bash
+# Fast extraction, premium building
+toskill run --extract-model claude-haiku-4.5 --build-model claude-opus-4.6 https://example.com/article
+
+# Or save in config
+toskill config set extract-model claude-haiku-4.5
+toskill config set build-model claude-opus-4.6
 ```
 
 ## Configuration

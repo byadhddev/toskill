@@ -21,14 +21,14 @@ var writtenSkillPath string
 // Returns the path to the written skill.
 func Run(ctx context.Context, client *copilot.Client, cfg config.Config, kbName string) (string, error) {
 	fmt.Fprintf(os.Stderr, "⚡ Skill Builder\n")
-	fmt.Fprintf(os.Stderr, "   KB: %s | Model: %s\n\n", kbName, cfg.Model)
+	fmt.Fprintf(os.Stderr, "   KB: %s | Model: %s\n\n", kbName, cfg.ModelFor("build"))
 
 	writtenSkillPath = ""
 	kbDir := cfg.KnowledgeBasesDir()
 	skillsDir := cfg.SkillsDir()
 
 	session, err := client.CreateSession(ctx, &copilot.SessionConfig{
-		Model:               cfg.Model,
+		Model:               cfg.ModelFor("build"),
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		SystemMessage:       &copilot.SystemMessageConfig{Content: builderSystemPrompt},
 		Tools: []copilot.Tool{
@@ -94,7 +94,7 @@ func RunAll(ctx context.Context, client *copilot.Client, cfg config.Config) ([]s
 	skillsDir := cfg.SkillsDir()
 
 	session, err := client.CreateSession(ctx, &copilot.SessionConfig{
-		Model:               cfg.Model,
+		Model:               cfg.ModelFor("build"),
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		SystemMessage:       &copilot.SystemMessageConfig{Content: builderSystemPrompt},
 		Tools: []copilot.Tool{

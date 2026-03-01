@@ -21,13 +21,13 @@ var writtenKBPath string
 // Returns the path to the written KB file.
 func Run(ctx context.Context, client *copilot.Client, cfg config.Config, articlePaths []string) (string, error) {
 	fmt.Fprintf(os.Stderr, "⚡ Knowledge Curator\n")
-	fmt.Fprintf(os.Stderr, "   Articles: %d | Model: %s\n\n", len(articlePaths), cfg.Model)
+	fmt.Fprintf(os.Stderr, "   Articles: %d | Model: %s\n\n", len(articlePaths), cfg.ModelFor("curate"))
 
 	writtenKBPath = ""
 	kbDir := cfg.KnowledgeBasesDir()
 
 	session, err := client.CreateSession(ctx, &copilot.SessionConfig{
-		Model:               cfg.Model,
+		Model:               cfg.ModelFor("curate"),
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		SystemMessage:       &copilot.SystemMessageConfig{Content: curatorSystemPrompt},
 		Tools: []copilot.Tool{

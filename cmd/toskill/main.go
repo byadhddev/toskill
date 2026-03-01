@@ -16,14 +16,16 @@ import (
 	"github.com/byadhddev/toskill/pkg/curator"
 	"github.com/byadhddev/toskill/pkg/extractor"
 	"github.com/byadhddev/toskill/pkg/ghstore"
+	"github.com/byadhddev/toskill/pkg/interactive"
 )
 
 var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
+		// No args → interactive mode
+		runInteractive()
+		return
 	}
 
 	command := os.Args[1]
@@ -41,6 +43,9 @@ func main() {
 	copilotURL := fs.String("copilot-url", "", "Copilot CLI server address (default: $COPILOT_CLI_URL or localhost:44321)")
 	output := fs.String("output", "", "Output directory (default: ./skill-store/)")
 	model := fs.String("model", "", "LLM model (default: claude-opus-4.6)")
+	extractModel := fs.String("extract-model", "", "Model for extraction phase")
+	curateModel := fs.String("curate-model", "", "Model for curation phase")
+	buildModel := fs.String("build-model", "", "Model for skill building phase")
 	verbose := fs.Bool("verbose", false, "Enable verbose output")
 	githubRepo := fs.String("github-repo", "", "GitHub repo for artifact storage (e.g. 'owner/toskill-store')")
 	githubToken := fs.String("github-token", "", "GitHub token for repo access (or $GITHUB_TOKEN)")
@@ -55,6 +60,15 @@ func main() {
 	}
 	if *model != "" {
 		cfg.Model = *model
+	}
+	if *extractModel != "" {
+		cfg.ExtractModel = *extractModel
+	}
+	if *curateModel != "" {
+		cfg.CurateModel = *curateModel
+	}
+	if *buildModel != "" {
+		cfg.BuildModel = *buildModel
 	}
 	cfg.Verbose = *verbose
 
@@ -93,7 +107,9 @@ func main() {
 	switch command {
 	case "run":
 		if len(args) == 0 {
-			fatal("No URLs provided.\nUsage: toskill run [flags] <url1> [url2] ...")
+			// No URLs → interactive mode
+			runInteractive()
+			return
 		}
 		client := connectCopilot(cfg.CopilotURL)
 		err = runPipeline(client, cfg, store, args)
@@ -139,9 +155,16 @@ func main() {
 
 func runPipeline(client *copilot.Client, cfg config.Config, store *ghstore.GitHubStore, urls []string) error {
 	fmt.Fprintf(os.Stderr, "🚀 Starting full pipeline for %d URL(s)\n", len(urls))
-	fmt.Fprintf(os.Stderr, "   Output: %s\n", cfg.OutputDir)
 	if store != nil {
-		fmt.Fprintf(os.Stderr, "   GitHub: %s/%s\n", store.Owner(), store.Repo())
+		fmt.Fprintf(os.Stderr, "   Storage: GitHub (%s/%s)\n", store.Owner(), store.Repo())
+		fmt.Fprintf(os.Stderr, "   Working dir: %s\n", cfg.OutputDir)
+	} else {
+		fmt.Fprintf(os.Stderr, "   Output: %s\n", cfg.OutputDir)
+	}
+	fmt.Fprintf(os.Stderr, "   Model: %s\n", cfg.Model)
+	if cfg.ExtractModel != "" || cfg.CurateModel != "" || cfg.BuildModel != "" {
+		fmt.Fprintf(os.Stderr, "   Extract: %s | Curate: %s | Build: %s\n",
+			cfg.ModelFor("extract"), cfg.ModelFor("curate"), cfg.ModelFor("build"))
 	}
 	fmt.Fprintf(os.Stderr, "\n")
 
@@ -406,7 +429,7 @@ func runConfig(args []string) error {
 			return fmt.Errorf("usage: toskill config set <key> <value>\nValid keys: copilot-url, output, model")
 		}
 		key, value := args[1], args[2]
-		validKeys := map[string]bool{"copilot-url": true, "output": true, "model": true, "github-repo": true, "github-token": true}
+		validKeys := map[string]bool{"copilot-url": true, "output": true, "model": true, "github-repo": true, "github-token": true, "extract-model": true, "curate-model": true, "build-model": true}
 		if !validKeys[key] {
 			return fmt.Errorf("unknown config key: %s (valid: copilot-url, output, model)", key)
 		}
@@ -490,53 +513,117 @@ func fatal(format string, args ...interface{}) {
 	os.Exit(1)
 }
 
+func runInteractive() {
+	// Load saved GitHub repo from config for pre-fill
+	savedRepo := ""
+	if fileCfg, err := config.LoadConfigFile(); err == nil {
+		savedRepo = fileCfg["github-repo"]
+	}
+
+	result, err := interactive.RunWizard(savedRepo)
+	if err != nil {
+		fatal("Interactive wizard failed: %v", err)
+	}
+	if !result.Confirmed {
+		fmt.Fprintf(os.Stderr, "\n👋 Cancelled.\n")
+		os.Exit(0)
+	}
+
+	// Build config from wizard result
+	cfg := config.DefaultConfig()
+	cfg.Model = result.Model
+	if result.ExtractModel != "" {
+		cfg.ExtractModel = result.ExtractModel
+	}
+	if result.CurateModel != "" {
+		cfg.CurateModel = result.CurateModel
+	}
+	if result.BuildModel != "" {
+		cfg.BuildModel = result.BuildModel
+	}
+
+	// GitHub storage
+	var store *ghstore.GitHubStore
+	if result.StorageMode == "github" && result.GitHubRepo != "" {
+		ghToken := os.Getenv("GITHUB_TOKEN")
+		if fileCfg, err := config.LoadConfigFile(); err == nil && ghToken == "" {
+			ghToken = fileCfg["github-token"]
+		}
+		if ghToken == "" {
+			fmt.Fprintf(os.Stderr, "⚠️  No GitHub token found. Set GITHUB_TOKEN or run: toskill config set github-token <token>\n")
+			fmt.Fprintf(os.Stderr, "   Falling back to local storage.\n\n")
+		} else {
+			store = ghstore.New(ghToken, result.GitHubRepo)
+		}
+	}
+
+	if err := cfg.EnsureDirs(); err != nil {
+		fatal("Failed to create output directories: %v", err)
+	}
+
+	client := connectCopilot(cfg.CopilotURL)
+	if err := runPipeline(client, cfg, store, result.URLs); err != nil {
+		fatal("Error: %v", err)
+	}
+	fmt.Fprintf(os.Stderr, "\n🎉 Done.\n")
+}
+
 func printUsage() {
 	fmt.Fprintf(os.Stderr, `toskill — Autonomous AI Skill Builder (%s)
 
 Transform web articles into structured, reusable AI skills.
 
 Usage:
+  toskill                        Interactive mode (guided setup)
   toskill <command> [flags] [args...]
 
 Commands:
   run <url1> [url2] ...     Full pipeline: extract → curate → build
+  run                       Interactive mode (no URLs → launches wizard)
   extract <url1> [url2] ... Extract content from URLs
   curate [article-paths]    Curate articles into a knowledge base
   build <kb-name>           Build a skill from a knowledge base
   build --auto              Build skills from all knowledge bases
   status                    Show pipeline state (articles, KBs, skills)
   config show               Show current configuration
-  config set <key> <value>  Set a config value (copilot-url, output, model)
+  config set <key> <value>  Set a config value
   config path               Print config file path
   version                   Print version
 
 Flags:
-  --copilot-url <addr>  Copilot CLI server (default: $COPILOT_CLI_URL or localhost:44321)
-  --output <dir>        Output directory (default: ./skill-store/)
-  --model <name>        LLM model (default: claude-opus-4.6)
-  --github-repo <repo>  GitHub repo for storage (e.g. 'owner/toskill-store')
-  --github-token <tok>  GitHub token (or $GITHUB_TOKEN)
-  --verbose             Enable verbose output
+  --copilot-url <addr>     Copilot CLI server (default: $COPILOT_CLI_URL or localhost:44321)
+  --output <dir>           Output directory (default: ./skill-store/)
+  --model <name>           LLM model for all phases (default: claude-opus-4.6)
+  --extract-model <name>   Model override for extraction phase
+  --curate-model <name>    Model override for curation phase
+  --build-model <name>     Model override for skill building phase
+  --github-repo <repo>     GitHub repo for storage (e.g. 'owner/toskill-store')
+  --github-token <tok>     GitHub token (or $GITHUB_TOKEN)
+  --verbose                Enable verbose output
 
 Examples:
+  # Interactive mode
+  toskill
+
   # Full pipeline
   toskill run https://example.com/article1 https://example.com/article2
 
   # With GitHub storage
   toskill run --github-repo myuser/my-skills --github-token ghp_xxx https://example.com/article
 
+  # Per-phase models (cheap extraction, premium building)
+  toskill run --extract-model claude-haiku-4.5 --build-model claude-opus-4.6 https://example.com/article
+
   # Individual phases
   toskill extract https://example.com/article
   toskill curate
   toskill build idor-vulnerabilities
 
-  # Custom output
-  toskill run --output ./my-skills https://example.com/article
-
 Environment:
   COPILOT_CLI_URL           Copilot CLI server address
-  TOSKILL_OUTPUT      Default output directory
-  TOSKILL_MODEL       Default model
+  TOSKILL_OUTPUT            Default output directory
+  TOSKILL_MODEL             Default model
+  GITHUB_TOKEN              GitHub token for storage
 
 Requires:
   - GitHub Copilot CLI running: copilot --headless --port 44321
