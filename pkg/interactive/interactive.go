@@ -76,6 +76,7 @@ func FetchModelsWithAuth(authMethod string, copilotURL string, githubToken strin
 	defer cancel()
 
 	if err := client.Start(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "   ⚠️  Could not connect (%v) — using fallback model list\n", err)
 		return fallbackModels
 	}
 	defer client.Stop()
@@ -487,13 +488,19 @@ func RunWizard(savedGitHubRepo string, modelOptions []huh.Option[string]) (*RunC
 	}
 
 	// --- Summary & Confirm ---
-	authSummary := map[string]string{
-		config.AuthAuto:        "Auto (SDK-managed)",
-		config.AuthCLIUrl:      fmt.Sprintf("External CLI (%s)", cfg.CopilotURL),
-		config.AuthGitHubToken: "GitHub Token",
-		config.AuthEnvVar:      "Environment Variable",
-		config.AuthBYOK:        fmt.Sprintf("BYOK (%s)", cfg.BYOKProvider.Type),
-	}[cfg.AuthMethod]
+	var authSummary string
+	switch cfg.AuthMethod {
+	case config.AuthAuto:
+		authSummary = "Auto (SDK-managed)"
+	case config.AuthCLIUrl:
+		authSummary = fmt.Sprintf("External CLI (%s)", cfg.CopilotURL)
+	case config.AuthGitHubToken:
+		authSummary = "GitHub Token"
+	case config.AuthEnvVar:
+		authSummary = "Environment Variable"
+	case config.AuthBYOK:
+		authSummary = fmt.Sprintf("BYOK (%s)", cfg.BYOKProvider.Type)
+	}
 
 	storageSummary := "Local (./skill-store/)"
 	if cfg.StorageMode == "github" {
