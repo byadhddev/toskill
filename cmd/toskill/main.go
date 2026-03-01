@@ -715,13 +715,25 @@ func fatal(format string, args ...interface{}) {
 }
 
 func runInteractive() {
-	// Load saved GitHub repo from config for pre-fill
+	// Load saved config
 	savedRepo := ""
+	copilotURL := "localhost:44321"
 	if fileCfg, err := config.LoadConfigFile(); err == nil {
 		savedRepo = fileCfg["github-repo"]
+		if fileCfg["copilot-url"] != "" {
+			copilotURL = fileCfg["copilot-url"]
+		}
+	}
+	if v := os.Getenv("COPILOT_CLI_URL"); v != "" {
+		copilotURL = v
 	}
 
-	result, err := interactive.RunWizard(savedRepo)
+	// Fetch available models from Copilot CLI
+	fmt.Fprintf(os.Stderr, "🔍 Loading available models from Copilot CLI...\n")
+	modelOptions := interactive.FetchModels(copilotURL)
+	fmt.Fprintf(os.Stderr, "   Found %d model(s)\n\n", len(modelOptions))
+
+	result, err := interactive.RunWizard(savedRepo, modelOptions)
 	if err != nil {
 		fatal("Interactive wizard failed: %v", err)
 	}

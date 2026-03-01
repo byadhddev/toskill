@@ -1,11 +1,14 @@
 package interactive
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	copilot "github.com/github/copilot-sdk/go"
 
 	"github.com/byadhddev/toskill/pkg/ghauth"
 )
@@ -25,24 +28,56 @@ type RunConfig struct {
 	Confirmed     bool
 }
 
-// Available models for selection
-var defaultModels = []huh.Option[string]{
-	huh.NewOption("claude-opus-4.6 (Recommended)", "claude-opus-4.6"),
+// fallbackModels used when Copilot CLI is unreachable.
+var fallbackModels = []huh.Option[string]{
+	huh.NewOption("claude-opus-4.6", "claude-opus-4.6"),
 	huh.NewOption("claude-sonnet-4.5", "claude-sonnet-4.5"),
-	huh.NewOption("claude-sonnet-4", "claude-sonnet-4"),
 	huh.NewOption("gpt-4.1", "gpt-4.1"),
-	huh.NewOption("claude-haiku-4.5 (Fast/Cheap)", "claude-haiku-4.5"),
+	huh.NewOption("claude-haiku-4.5", "claude-haiku-4.5"),
 }
 
 var theme = huh.ThemeCharm()
 
+// FetchModels connects to Copilot CLI and returns the available models as huh options.
+func FetchModels(copilotURL string) []huh.Option[string] {
+	client := copilot.NewClient(&copilot.ClientOptions{
+		CLIUrl:   copilotURL,
+		LogLevel: "error",
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := client.Start(ctx); err != nil {
+		return fallbackModels
+	}
+
+	models, err := client.ListModels(ctx)
+	if err != nil || len(models) == 0 {
+		return fallbackModels
+	}
+
+	options := make([]huh.Option[string], 0, len(models))
+	for _, m := range models {
+		label := m.Name
+		if label == "" {
+			label = m.ID
+		}
+		options = append(options, huh.NewOption(label, m.ID))
+	}
+	return options
+}
+
 // RunWizard launches the interactive configuration wizard.
-func RunWizard(savedGitHubRepo string) (*RunConfig, error) {
+func RunWizard(savedGitHubRepo string, modelOptions []huh.Option[string]) (*RunConfig, error) {
 	cfg := &RunConfig{
 		StorageMode: "local",
 		GitHubRepo:  savedGitHubRepo,
 		OutputDir:   "./skill-store",
 		Model:       "claude-opus-4.6",
+	}
+
+	if len(modelOptions) == 0 {
+		modelOptions = fallbackModels
 	}
 
 	banner := lipgloss.NewStyle().
@@ -176,7 +211,7 @@ func RunWizard(savedGitHubRepo string) (*RunConfig, error) {
 			huh.NewSelect[string]().
 				Title("🧠 Model").
 				Description("LLM for all pipeline phases").
-				Options(defaultModels...).
+				Options(modelOptions...).
 				Value(&cfg.Model),
 		),
 	).WithTheme(theme).Run()
@@ -210,17 +245,17 @@ func RunWizard(savedGitHubRepo string) (*RunConfig, error) {
 				huh.NewSelect[string]().
 					Title("🔍 Extract Model").
 					Description("For browsing and content extraction").
-					Options(defaultModels...).
+					Options(modelOptions...).
 					Value(&cfg.ExtractModel),
 				huh.NewSelect[string]().
 					Title("📚 Curate Model").
 					Description("For knowledge base creation").
-					Options(defaultModels...).
+					Options(modelOptions...).
 					Value(&cfg.CurateModel),
 				huh.NewSelect[string]().
 					Title("🛠️  Build Model").
 					Description("For skill generation").
-					Options(defaultModels...).
+					Options(modelOptions...).
 					Value(&cfg.BuildModel),
 			),
 		).WithTheme(theme).Run()
