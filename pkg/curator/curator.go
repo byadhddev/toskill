@@ -26,7 +26,7 @@ func Run(ctx context.Context, client *copilot.Client, cfg config.Config, article
 	writtenKBPath = ""
 	kbDir := cfg.KnowledgeBasesDir()
 
-	session, err := client.CreateSession(ctx, &copilot.SessionConfig{
+	sessionCfg := &copilot.SessionConfig{
 		Model:               cfg.ModelFor("curate"),
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		SystemMessage:       &copilot.SystemMessageConfig{Content: curatorSystemPrompt},
@@ -37,7 +37,9 @@ func Run(ctx context.Context, client *copilot.Client, cfg config.Config, article
 			writeKnowledgeBaseTool(kbDir),
 			tools.RunCommandTool(60 * time.Second),
 		},
-	})
+	}
+	cfg.ApplyBYOK(sessionCfg)
+	session, err := client.CreateSession(ctx, sessionCfg)
 	if err != nil {
 		return "", fmt.Errorf("failed to create session: %w", err)
 	}

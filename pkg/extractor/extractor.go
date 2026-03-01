@@ -45,7 +45,7 @@ func browseURL(ctx context.Context, client *copilot.Client, cfg config.Config, u
 	extractedContent = ""
 
 	dataDir := cfg.OutputDir
-	session, err := client.CreateSession(ctx, &copilot.SessionConfig{
+	sessionCfg := &copilot.SessionConfig{
 		Model:               cfg.ModelFor("extract"),
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		SystemMessage:       &copilot.SystemMessageConfig{Content: systemPrompt},
@@ -56,7 +56,9 @@ func browseURL(ctx context.Context, client *copilot.Client, cfg config.Config, u
 			tools.RunCommandTool(120 * time.Second),
 			saveResultTool(),
 		},
-	})
+	}
+	cfg.ApplyBYOK(sessionCfg)
+	session, err := client.CreateSession(ctx, sessionCfg)
 	if err != nil {
 		return "", fmt.Errorf("failed to create session: %w", err)
 	}

@@ -27,7 +27,7 @@ func Run(ctx context.Context, client *copilot.Client, cfg config.Config, kbName 
 	kbDir := cfg.KnowledgeBasesDir()
 	skillsDir := cfg.SkillsDir()
 
-	session, err := client.CreateSession(ctx, &copilot.SessionConfig{
+	sessionCfg := &copilot.SessionConfig{
 		Model:               cfg.ModelFor("build"),
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		SystemMessage:       &copilot.SystemMessageConfig{Content: builderSystemPrompt},
@@ -40,7 +40,9 @@ func Run(ctx context.Context, client *copilot.Client, cfg config.Config, kbName 
 			writeSkillTool(skillsDir),
 			tools.RunCommandTool(120 * time.Second),
 		},
-	})
+	}
+	cfg.ApplyBYOK(sessionCfg)
+	session, err := client.CreateSession(ctx, sessionCfg)
 	if err != nil {
 		return "", fmt.Errorf("failed to create session: %w", err)
 	}
@@ -93,7 +95,7 @@ func RunAll(ctx context.Context, client *copilot.Client, cfg config.Config) ([]s
 	kbDir := cfg.KnowledgeBasesDir()
 	skillsDir := cfg.SkillsDir()
 
-	session, err := client.CreateSession(ctx, &copilot.SessionConfig{
+	sessionCfg2 := &copilot.SessionConfig{
 		Model:               cfg.ModelFor("build"),
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		SystemMessage:       &copilot.SystemMessageConfig{Content: builderSystemPrompt},
@@ -106,7 +108,9 @@ func RunAll(ctx context.Context, client *copilot.Client, cfg config.Config) ([]s
 			writeSkillTool(skillsDir),
 			tools.RunCommandTool(120 * time.Second),
 		},
-	})
+	}
+	cfg.ApplyBYOK(sessionCfg2)
+	session, err := client.CreateSession(ctx, sessionCfg2)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}

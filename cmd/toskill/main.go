@@ -51,11 +51,38 @@ func main() {
 	verbose := fs.Bool("verbose", false, "Enable verbose output")
 	githubRepo := fs.String("github-repo", "", "GitHub repo for artifact storage (e.g. 'owner/toskill-store')")
 	githubToken := fs.String("github-token", "", "GitHub token for repo access (or $GITHUB_TOKEN)")
+	authMethod := fs.String("auth", "", "Auth method: auto|cli-url|github-token|env-var|byok (default: auto)")
+	copilotToken := fs.String("copilot-token", "", "GitHub token for Copilot auth (with --auth github-token)")
+	byokProvider := fs.String("byok-provider", "", "BYOK provider type: openai|anthropic|azure (with --auth byok)")
+	byokURL := fs.String("byok-url", "", "BYOK provider base URL (with --auth byok)")
+	byokKey := fs.String("byok-key", "", "BYOK API key (with --auth byok)")
 	fs.Parse(os.Args[2:])
 
 	cfg := config.DefaultConfig()
 	if *copilotURL != "" {
 		cfg.CopilotURL = *copilotURL
+		if cfg.AuthMethod == config.AuthAuto {
+			cfg.AuthMethod = config.AuthCLIUrl
+		}
+	}
+	if *authMethod != "" {
+		cfg.AuthMethod = *authMethod
+	}
+	if *copilotToken != "" {
+		cfg.GitHubCopilotToken = *copilotToken
+		if cfg.AuthMethod == config.AuthAuto {
+			cfg.AuthMethod = config.AuthGitHubToken
+		}
+	}
+	if *byokProvider != "" || *byokURL != "" || *byokKey != "" {
+		cfg.BYOKProvider = &copilot.ProviderConfig{
+			Type:    *byokProvider,
+			BaseURL: *byokURL,
+			APIKey:  *byokKey,
+		}
+		if cfg.AuthMethod == config.AuthAuto {
+			cfg.AuthMethod = config.AuthBYOK
+		}
 	}
 	if *output != "" {
 		cfg.OutputDir = *output
@@ -117,25 +144,25 @@ func main() {
 			runInteractive()
 			return
 		}
-		client := connectCopilot(cfg.CopilotURL)
+		client := createClient(cfg)
 		err = runPipeline(client, cfg, store, args)
 
 	case "extract":
 		if len(args) == 0 {
 			fatal("No URLs provided.\nUsage: toskill extract [flags] <url1> [url2] ...")
 		}
-		client := connectCopilot(cfg.CopilotURL)
+		client := createClient(cfg)
 		err = runExtract(client, cfg, args)
 
 	case "curate":
-		client := connectCopilot(cfg.CopilotURL)
+		client := createClient(cfg)
 		err = runCurate(client, cfg, args)
 
 	case "build":
 		if len(args) == 0 {
 			fatal("No KB name provided.\nUsage: toskill build [flags] <kb-name>")
 		}
-		client := connectCopilot(cfg.CopilotURL)
+		client := createClient(cfg)
 		err = runBuild(client, cfg, args)
 
 	case "status":
@@ -630,7 +657,7 @@ func runConfig(args []string) error {
 			return fmt.Errorf("usage: toskill config set <key> <value>\nValid keys: copilot-url, output, model")
 		}
 		key, value := args[1], args[2]
-		validKeys := map[string]bool{"copilot-url": true, "output": true, "model": true, "github-repo": true, "github-token": true, "extract-model": true, "curate-model": true, "build-model": true}
+		validKeys := map[string]bool{"copilot-url": true, "output": true, "model": true, "github-repo": true, "github-token": true, "extract-model": true, "curate-model": true, "build-model": true, "auth-method": true}
 		if !validKeys[key] {
 			return fmt.Errorf("unknown config key: %s (valid: copilot-url, output, model)", key)
 		}
@@ -649,21 +676,70 @@ func runConfig(args []string) error {
 	return fmt.Errorf("unknown config subcommand: %s (valid: show, set, path)", args[0])
 }
 
-func connectCopilot(url string) *copilot.Client {
-	opts := &copilot.ClientOptions{
-		CLIUrl:   url,
-		LogLevel: "error",
+func createClient(cfg config.Config) *copilot.Client {
+	var opts *copilot.ClientOptions
+
+	switch cfg.AuthMethod {
+	case config.AuthCLIUrl:
+		// Connect to external headless CLI server
+		fmt.Fprintf(os.Stderr, "🔌 Connecting to Copilot CLI at %s...\n", cfg.CopilotURL)
+		opts = &copilot.ClientOptions{
+			CLIUrl:   cfg.CopilotURL,
+			LogLevel: "error",
+		}
+
+	case config.AuthGitHubToken:
+		// SDK spawns CLI with explicit token
+		fmt.Fprintf(os.Stderr, "🔑 Starting Copilot with GitHub token...\n")
+		opts = &copilot.ClientOptions{
+			GitHubToken:     cfg.GitHubCopilotToken,
+			UseLoggedInUser: copilot.Bool(false),
+			LogLevel:        "error",
+		}
+
+	case config.AuthEnvVar:
+		// SDK auto-detects COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN
+		fmt.Fprintf(os.Stderr, "🔑 Starting Copilot with environment variable token...\n")
+		opts = &copilot.ClientOptions{
+			UseLoggedInUser: copilot.Bool(false),
+			LogLevel:        "error",
+		}
+
+	case config.AuthBYOK:
+		// BYOK: SDK spawns CLI, provider config passed at session level
+		fmt.Fprintf(os.Stderr, "🔑 Starting Copilot in BYOK mode (%s)...\n", cfg.BYOKProvider.Type)
+		opts = &copilot.ClientOptions{
+			LogLevel: "error",
+		}
+
+	default: // AuthAuto
+		// SDK auto-manages: stored Copilot creds → env vars → gh CLI
+		fmt.Fprintf(os.Stderr, "🔌 Starting Copilot (auto-auth)...\n")
+		opts = &copilot.ClientOptions{
+			LogLevel: "error",
+		}
 	}
+
 	client := copilot.NewClient(opts)
 
-	fmt.Fprintf(os.Stderr, "🔌 Connecting to Copilot CLI at %s...\n", url)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	if err := client.Start(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Failed to connect: %v\n", err)
-		fmt.Fprintf(os.Stderr, "\nTip: Start Copilot CLI first:\n")
-		fmt.Fprintf(os.Stderr, "  copilot --headless --port 44321\n\n")
+		switch cfg.AuthMethod {
+		case config.AuthCLIUrl:
+			fmt.Fprintf(os.Stderr, "\nTip: Start Copilot CLI first:\n")
+			fmt.Fprintf(os.Stderr, "  copilot --headless --port 44321\n\n")
+		case config.AuthGitHubToken:
+			fmt.Fprintf(os.Stderr, "\nTip: Check your token is valid (gho_, ghu_, or github_pat_ prefix)\n\n")
+		case config.AuthEnvVar:
+			fmt.Fprintf(os.Stderr, "\nTip: Set one of: COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN\n\n")
+		case config.AuthBYOK:
+			fmt.Fprintf(os.Stderr, "\nTip: Check your API key and base URL\n\n")
+		default:
+			fmt.Fprintf(os.Stderr, "\nTip: Run 'copilot' to sign in, or use --auth cli-url with a headless server\n\n")
+		}
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "✅ Connected\n\n")
@@ -717,23 +793,12 @@ func fatal(format string, args ...interface{}) {
 func runInteractive() {
 	// Load saved config
 	savedRepo := ""
-	copilotURL := "localhost:44321"
 	if fileCfg, err := config.LoadConfigFile(); err == nil {
 		savedRepo = fileCfg["github-repo"]
-		if fileCfg["copilot-url"] != "" {
-			copilotURL = fileCfg["copilot-url"]
-		}
-	}
-	if v := os.Getenv("COPILOT_CLI_URL"); v != "" {
-		copilotURL = v
 	}
 
-	// Fetch available models from Copilot CLI
-	fmt.Fprintf(os.Stderr, "🔍 Loading available models from Copilot CLI...\n")
-	modelOptions := interactive.FetchModels(copilotURL)
-	fmt.Fprintf(os.Stderr, "   Found %d model(s)\n\n", len(modelOptions))
-
-	result, err := interactive.RunWizard(savedRepo, modelOptions)
+	// Wizard handles auth selection, model fetching, and all config
+	result, err := interactive.RunWizard(savedRepo, nil)
 	if err != nil {
 		fatal("Interactive wizard failed: %v", err)
 	}
@@ -745,6 +810,10 @@ func runInteractive() {
 	// Build config from wizard result
 	cfg := config.DefaultConfig()
 	cfg.Model = result.Model
+	cfg.AuthMethod = result.AuthMethod
+	cfg.CopilotURL = result.CopilotURL
+	cfg.GitHubCopilotToken = result.GitHubCopilotToken
+	cfg.BYOKProvider = result.BYOKProvider
 	if result.ExtractModel != "" {
 		cfg.ExtractModel = result.ExtractModel
 	}
@@ -774,7 +843,7 @@ func runInteractive() {
 		fatal("Failed to create output directories: %v", err)
 	}
 
-	client := connectCopilot(cfg.CopilotURL)
+	client := createClient(cfg)
 	if err := runPipeline(client, cfg, store, result.URLs); err != nil {
 		fatal("Error: %v", err)
 	}
@@ -805,43 +874,64 @@ Commands:
   config path               Print config file path
   version                   Print version
 
+Authentication:
+  --auth <method>           Auth method (default: auto)
+    auto                      SDK auto-manages CLI (recommended)
+    cli-url                   Connect to external headless CLI server
+    github-token              Explicit GitHub token (SDK starts CLI)
+    env-var                   Use COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN
+    byok                      Bring your own key (OpenAI / Anthropic / Azure)
+  --copilot-url <addr>      Headless CLI address (with --auth cli-url)
+  --copilot-token <token>   GitHub token for Copilot (with --auth github-token)
+  --byok-provider <type>    Provider: openai|anthropic|azure (with --auth byok)
+  --byok-url <url>          Provider base URL (with --auth byok)
+  --byok-key <key>          Provider API key (with --auth byok)
+
 Flags:
-  --copilot-url <addr>     Copilot CLI server (default: $COPILOT_CLI_URL or localhost:44321)
   --output <dir>           Output directory (default: ./skill-store/)
   --model <name>           LLM model for all phases (default: claude-opus-4.6)
   --extract-model <name>   Model override for extraction phase
   --curate-model <name>    Model override for curation phase
   --build-model <name>     Model override for skill building phase
   --github-repo <repo>     GitHub repo for storage (e.g. 'owner/toskill-store')
-  --github-token <tok>     GitHub token (or $GITHUB_TOKEN)
+  --github-token <tok>     GitHub token for storage (or $GITHUB_TOKEN)
   --verbose                Enable verbose output
 
 Examples:
-  # Interactive mode
+  # Interactive mode (recommended — guided setup with all options)
   toskill
 
-  # Full pipeline
-  toskill run https://example.com/article1 https://example.com/article2
+  # Auto auth: SDK manages everything (no manual headless server needed)
+  toskill run https://example.com/article
 
-  # With GitHub storage
-  toskill run --github-repo myuser/my-skills --github-token ghp_xxx https://example.com/article
+  # External headless CLI server
+  toskill run --auth cli-url --copilot-url localhost:44321 https://example.com/article
 
-  # Per-phase models (cheap extraction, premium building)
+  # Explicit GitHub token
+  toskill run --copilot-token gho_xxxx https://example.com/article
+
+  # BYOK with OpenAI
+  toskill run --auth byok --byok-provider openai --byok-url https://api.openai.com/v1 \
+    --byok-key sk-xxx --model gpt-4o https://example.com/article
+
+  # Per-phase models
   toskill run --extract-model claude-haiku-4.5 --build-model claude-opus-4.6 https://example.com/article
 
-  # Individual phases
-  toskill extract https://example.com/article
-  toskill curate
-  toskill build idor-vulnerabilities
+  # With GitHub storage
+  toskill run --github-repo myuser/my-skills https://example.com/article
 
 Environment:
-  COPILOT_CLI_URL           Copilot CLI server address
+  COPILOT_CLI_URL           Copilot CLI server address (sets auth to cli-url)
+  COPILOT_GITHUB_TOKEN      GitHub token for Copilot auth (highest priority)
+  GH_TOKEN                  GitHub CLI compatible token
+  GITHUB_TOKEN              GitHub Actions compatible token
   TOSKILL_OUTPUT            Default output directory
   TOSKILL_MODEL             Default model
-  GITHUB_TOKEN              GitHub token for storage
 
-Requires:
-  - GitHub Copilot CLI running: copilot --headless --port 44321
-  - Node.js 18+ (for npx skills)
+Auth priority (auto mode):
+  1. Explicit token (--copilot-token)
+  2. Env vars: COPILOT_GITHUB_TOKEN → GH_TOKEN → GITHUB_TOKEN
+  3. Stored Copilot CLI OAuth credentials
+  4. gh CLI auth (gh auth token)
 `, version)
 }

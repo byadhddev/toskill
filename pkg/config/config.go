@@ -5,17 +5,33 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	copilot "github.com/github/copilot-sdk/go"
+)
+
+// AuthMethod identifies how the SDK connects and authenticates.
+const (
+	AuthAuto        = "auto"         // SDK auto-manages CLI process, uses stored credentials
+	AuthCLIUrl      = "cli-url"      // Connect to external headless CLI server
+	AuthGitHubToken = "github-token" // Explicit GitHub token, SDK starts CLI
+	AuthEnvVar      = "env-var"      // Use environment variables (COPILOT_GITHUB_TOKEN etc.)
+	AuthBYOK        = "byok"         // Bring your own API key (no Copilot subscription)
 )
 
 // Config holds shared configuration for all agents.
 type Config struct {
-	CopilotURL    string // Copilot CLI server address
+	CopilotURL    string // Copilot CLI server address (for AuthCLIUrl)
 	OutputDir     string // Base output directory (articles/, knowledge-bases/, skills/)
 	Model         string // LLM model to use (default for all phases)
 	ExtractModel  string // Model override for extraction phase
 	CurateModel   string // Model override for curation phase
 	BuildModel    string // Model override for skill building phase
 	Verbose       bool   // Enable verbose output
+
+	// Auth
+	AuthMethod        string                // One of Auth* constants (default: AuthAuto)
+	GitHubCopilotToken string               // For AuthGitHubToken method
+	BYOKProvider      *copilot.ProviderConfig // For AuthBYOK method
 }
 
 // ModelFor returns the model to use for a given phase.
@@ -38,6 +54,13 @@ func (c Config) ModelFor(phase string) string {
 	return c.Model
 }
 
+// ApplyBYOK sets the BYOK provider on a SessionConfig if configured.
+func (c Config) ApplyBYOK(sc *copilot.SessionConfig) {
+	if c.BYOKProvider != nil {
+		sc.Provider = c.BYOKProvider
+	}
+}
+
 // DefaultConfig returns a Config with sensible defaults.
 // It loads from config file first, then env vars override.
 func DefaultConfig() Config {
@@ -45,6 +68,7 @@ func DefaultConfig() Config {
 		CopilotURL: "localhost:44321",
 		OutputDir:  defaultOutputDir(),
 		Model:      "claude-opus-4.6",
+		AuthMethod: AuthAuto,
 	}
 
 	// Load from config file
@@ -66,6 +90,9 @@ func DefaultConfig() Config {
 		}
 		if fileCfg["build-model"] != "" {
 			cfg.BuildModel = fileCfg["build-model"]
+		}
+		if fileCfg["auth-method"] != "" {
+			cfg.AuthMethod = fileCfg["auth-method"]
 		}
 	}
 

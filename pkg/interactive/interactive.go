@@ -3,6 +3,7 @@ package interactive
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	copilot "github.com/github/copilot-sdk/go"
 
+	"github.com/byadhddev/toskill/pkg/config"
 	"github.com/byadhddev/toskill/pkg/ghauth"
 )
 
@@ -26,6 +28,12 @@ type RunConfig struct {
 	CurateModel   string
 	BuildModel    string
 	Confirmed     bool
+
+	// Auth
+	AuthMethod         string                  // config.Auth* constant
+	CopilotURL         string                  // for AuthCLIUrl
+	GitHubCopilotToken string                  // for AuthGitHubToken
+	BYOKProvider       *copilot.ProviderConfig // for AuthBYOK
 }
 
 // fallbackModels used when Copilot CLI is unreachable.
@@ -38,18 +46,39 @@ var fallbackModels = []huh.Option[string]{
 
 var theme = huh.ThemeCharm()
 
-// FetchModels connects to Copilot CLI and returns the available models as huh options.
-func FetchModels(copilotURL string) []huh.Option[string] {
-	client := copilot.NewClient(&copilot.ClientOptions{
-		CLIUrl:   copilotURL,
-		LogLevel: "error",
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+// FetchModelsWithAuth creates a temporary client using the selected auth method to get models.
+func FetchModelsWithAuth(authMethod string, copilotURL string, githubToken string) []huh.Option[string] {
+	var opts *copilot.ClientOptions
+
+	switch authMethod {
+	case config.AuthCLIUrl:
+		opts = &copilot.ClientOptions{
+			CLIUrl:   copilotURL,
+			LogLevel: "error",
+		}
+	case config.AuthGitHubToken:
+		opts = &copilot.ClientOptions{
+			GitHubToken:     githubToken,
+			UseLoggedInUser: copilot.Bool(false),
+			LogLevel:        "error",
+		}
+	case config.AuthBYOK:
+		// BYOK: models are custom, skip fetching
+		return fallbackModels
+	default: // AuthAuto, AuthEnvVar
+		opts = &copilot.ClientOptions{
+			LogLevel: "error",
+		}
+	}
+
+	client := copilot.NewClient(opts)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	if err := client.Start(ctx); err != nil {
 		return fallbackModels
 	}
+	defer client.Stop()
 
 	models, err := client.ListModels(ctx)
 	if err != nil || len(models) == 0 {
@@ -67,6 +96,11 @@ func FetchModels(copilotURL string) []huh.Option[string] {
 	return options
 }
 
+// FetchModels connects to Copilot CLI via CLIUrl and returns available models (legacy).
+func FetchModels(copilotURL string) []huh.Option[string] {
+	return FetchModelsWithAuth(config.AuthCLIUrl, copilotURL, "")
+}
+
 // RunWizard launches the interactive configuration wizard.
 func RunWizard(savedGitHubRepo string, modelOptions []huh.Option[string]) (*RunConfig, error) {
 	cfg := &RunConfig{
@@ -74,6 +108,8 @@ func RunWizard(savedGitHubRepo string, modelOptions []huh.Option[string]) (*RunC
 		GitHubRepo:  savedGitHubRepo,
 		OutputDir:   "./skill-store",
 		Model:       "claude-opus-4.6",
+		AuthMethod:  config.AuthAuto,
+		CopilotURL:  "localhost:44321",
 	}
 
 	if len(modelOptions) == 0 {
@@ -87,9 +123,157 @@ func RunWizard(savedGitHubRepo string, modelOptions []huh.Option[string]) (*RunC
 	fmt.Println(banner)
 	fmt.Println()
 
-	// --- Page 1: URLs ---
-	var urlsRaw string
+	// --- Page 1: Auth Method ---
+	authOptions := []huh.Option[string]{
+		huh.NewOption("Auto — SDK manages CLI (Recommended)", config.AuthAuto),
+		huh.NewOption("External CLI — connect to headless server", config.AuthCLIUrl),
+		huh.NewOption("GitHub Token — explicit PAT / OAuth token", config.AuthGitHubToken),
+		huh.NewOption("Environment Variable — COPILOT_GITHUB_TOKEN / GH_TOKEN", config.AuthEnvVar),
+		huh.NewOption("BYOK — Bring Your Own Key (OpenAI / Anthropic / Azure)", config.AuthBYOK),
+	}
+
+	// Auto-detect hints
+	envHint := ""
+	for _, key := range []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
+		if os.Getenv(key) != "" {
+			envHint = fmt.Sprintf(" (%s detected)", key)
+			break
+		}
+	}
+	authDesc := "How should toskill connect to the AI backend?" + envHint
+
 	err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("🔑 Authentication").
+				Description(authDesc).
+				Options(authOptions...).
+				Value(&cfg.AuthMethod),
+		),
+	).WithTheme(theme).Run()
+	if err != nil {
+		return nil, err
+	}
+
+	// Auth-specific follow-up
+	switch cfg.AuthMethod {
+	case config.AuthCLIUrl:
+		err = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("🔌 Copilot CLI address").
+					Description("Format: host:port (e.g. localhost:44321)").
+					Placeholder("localhost:44321").
+					Value(&cfg.CopilotURL),
+			),
+		).WithTheme(theme).Run()
+		if err != nil {
+			return nil, err
+		}
+
+	case config.AuthGitHubToken:
+		err = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("🔑 GitHub Token").
+					Description("Paste your token (gho_, ghu_, or github_pat_ prefix)").
+					EchoMode(huh.EchoModePassword).
+					Value(&cfg.GitHubCopilotToken).
+					Validate(func(s string) error {
+						s = strings.TrimSpace(s)
+						if s == "" {
+							return fmt.Errorf("token is required")
+						}
+						return nil
+					}),
+			),
+		).WithTheme(theme).Run()
+		if err != nil {
+			return nil, err
+		}
+
+	case config.AuthEnvVar:
+		// Verify an env var is actually set
+		found := false
+		for _, key := range []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
+			if os.Getenv(key) != "" {
+				fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(
+					fmt.Sprintf("✅ Using %s from environment", key)))
+				fmt.Println()
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(
+				"⚠️  No token env var found. Set COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN"))
+			fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(
+				"   Falling back to Auto mode"))
+			fmt.Println()
+			cfg.AuthMethod = config.AuthAuto
+		}
+
+	case config.AuthBYOK:
+		providerType := "openai"
+		var baseURL, apiKey string
+
+		err = huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("🏷️  Provider").
+					Options(
+						huh.NewOption("OpenAI", "openai"),
+						huh.NewOption("Anthropic", "anthropic"),
+						huh.NewOption("Azure AI Foundry", "azure"),
+					).
+					Value(&providerType),
+				huh.NewInput().
+					Title("🌐 Base URL").
+					Description("API endpoint URL").
+					Placeholder("https://api.openai.com/v1").
+					Value(&baseURL).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("base URL is required")
+						}
+						return nil
+					}),
+				huh.NewInput().
+					Title("🔑 API Key").
+					Description("Your provider API key (optional for local providers)").
+					EchoMode(huh.EchoModePassword).
+					Value(&apiKey),
+			),
+		).WithTheme(theme).Run()
+		if err != nil {
+			return nil, err
+		}
+
+		cfg.BYOKProvider = &copilot.ProviderConfig{
+			Type:    providerType,
+			BaseURL: baseURL,
+			APIKey:  apiKey,
+		}
+	}
+
+	// Fetch models dynamically after auth is configured
+	if cfg.AuthMethod != config.AuthBYOK {
+		fmt.Fprintf(os.Stderr, "🔍 Loading available models...\n")
+		fetched := FetchModelsWithAuth(cfg.AuthMethod, cfg.CopilotURL, cfg.GitHubCopilotToken)
+		if len(fetched) > 0 {
+			modelOptions = fetched
+		}
+		fmt.Fprintf(os.Stderr, "   Found %d model(s)\n\n", len(modelOptions))
+	} else {
+		// BYOK: let user type a custom model name
+		fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(
+			"   BYOK mode: enter your model name below"))
+		fmt.Println()
+	}
+
+	// --- Page 2: URLs ---
+	var urlsRaw string
+	err = huh.NewForm(
 		huh.NewGroup(
 			huh.NewText().
 				Title("🔗 URLs to process").
@@ -115,7 +299,7 @@ func RunWizard(savedGitHubRepo string, modelOptions []huh.Option[string]) (*RunC
 	}
 	cfg.URLs = parseURLs(urlsRaw)
 
-	// --- Page 2: Storage ---
+	// --- Page 3: Storage ---
 	storageOptions := []huh.Option[string]{
 		huh.NewOption("Local (./skill-store/)", "local"),
 		huh.NewOption("GitHub Repository", "github"),
@@ -205,21 +389,40 @@ func RunWizard(savedGitHubRepo string, modelOptions []huh.Option[string]) (*RunC
 		}
 	}
 
-	// --- Page 3: Model ---
-	err = huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("🧠 Model").
-				Description("LLM for all pipeline phases").
-				Options(modelOptions...).
-				Value(&cfg.Model),
-		),
-	).WithTheme(theme).Run()
+	// --- Page 4: Model ---
+	if cfg.AuthMethod == config.AuthBYOK {
+		// BYOK: free-text model name
+		err = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("🧠 Model name").
+					Description("Enter the model ID for your provider").
+					Placeholder("gpt-4o").
+					Value(&cfg.Model).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("model name is required")
+						}
+						return nil
+					}),
+			),
+		).WithTheme(theme).Run()
+	} else {
+		err = huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("🧠 Model").
+					Description("LLM for all pipeline phases").
+					Options(modelOptions...).
+					Value(&cfg.Model),
+			),
+		).WithTheme(theme).Run()
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	// --- Page 4: Per-phase models (optional) ---
+	// --- Page 5: Per-phase models (optional) ---
 	var perPhase bool
 	err = huh.NewForm(
 		huh.NewGroup(
@@ -240,31 +443,58 @@ func RunWizard(savedGitHubRepo string, modelOptions []huh.Option[string]) (*RunC
 		cfg.CurateModel = cfg.Model
 		cfg.BuildModel = cfg.Model
 
-		err = huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("🔍 Extract Model").
-					Description("For browsing and content extraction").
-					Options(modelOptions...).
-					Value(&cfg.ExtractModel),
-				huh.NewSelect[string]().
-					Title("📚 Curate Model").
-					Description("For knowledge base creation").
-					Options(modelOptions...).
-					Value(&cfg.CurateModel),
-				huh.NewSelect[string]().
-					Title("🛠️  Build Model").
-					Description("For skill generation").
-					Options(modelOptions...).
-					Value(&cfg.BuildModel),
-			),
-		).WithTheme(theme).Run()
+		if cfg.AuthMethod == config.AuthBYOK {
+			err = huh.NewForm(
+				huh.NewGroup(
+					huh.NewInput().
+						Title("🔍 Extract Model").
+						Description("For browsing and content extraction").
+						Value(&cfg.ExtractModel),
+					huh.NewInput().
+						Title("📚 Curate Model").
+						Description("For knowledge base creation").
+						Value(&cfg.CurateModel),
+					huh.NewInput().
+						Title("🛠️  Build Model").
+						Description("For skill generation").
+						Value(&cfg.BuildModel),
+				),
+			).WithTheme(theme).Run()
+		} else {
+			err = huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("🔍 Extract Model").
+						Description("For browsing and content extraction").
+						Options(modelOptions...).
+						Value(&cfg.ExtractModel),
+					huh.NewSelect[string]().
+						Title("📚 Curate Model").
+						Description("For knowledge base creation").
+						Options(modelOptions...).
+						Value(&cfg.CurateModel),
+					huh.NewSelect[string]().
+						Title("🛠️  Build Model").
+						Description("For skill generation").
+						Options(modelOptions...).
+						Value(&cfg.BuildModel),
+				),
+			).WithTheme(theme).Run()
+		}
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	// --- Summary & Confirm ---
+	authSummary := map[string]string{
+		config.AuthAuto:        "Auto (SDK-managed)",
+		config.AuthCLIUrl:      fmt.Sprintf("External CLI (%s)", cfg.CopilotURL),
+		config.AuthGitHubToken: "GitHub Token",
+		config.AuthEnvVar:      "Environment Variable",
+		config.AuthBYOK:        fmt.Sprintf("BYOK (%s)", cfg.BYOKProvider.Type),
+	}[cfg.AuthMethod]
+
 	storageSummary := "Local (./skill-store/)"
 	if cfg.StorageMode == "github" {
 		storageSummary = fmt.Sprintf("GitHub (%s)", cfg.GitHubRepo)
@@ -281,8 +511,8 @@ func RunWizard(savedGitHubRepo string, modelOptions []huh.Option[string]) (*RunC
 		Padding(0, 1)
 
 	summary := fmt.Sprintf(
-		"  URLs:     %d\n  Storage:  %s\n  Model:    %s",
-		len(cfg.URLs), storageSummary, modelSummary,
+		"  Auth:     %s\n  URLs:     %d\n  Storage:  %s\n  Model:    %s",
+		authSummary, len(cfg.URLs), storageSummary, modelSummary,
 	)
 	fmt.Println(summaryStyle.Render(summary))
 	fmt.Println()

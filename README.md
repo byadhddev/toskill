@@ -47,25 +47,91 @@ make install     # → $GOPATH/bin/toskill
 
 ## Prerequisites
 
-- **[GitHub Copilot CLI](https://github.com/github/copilot-cli)** — installed and authenticated
+- **[GitHub Copilot CLI](https://github.com/github/copilot-cli)** — installed and authenticated (for Auto/CLI modes)
 - **[GitHub CLI (`gh`)](https://cli.github.com/)** — for GitHub storage integration (optional)
 - **Node.js 18+** — for `npx skills` (skill discovery)
 
 ## Quick Start
 
 ```bash
-# 1. Start Copilot CLI (in a separate terminal)
-copilot --headless --port 44321
-
-# 2. Interactive mode — guided setup wizard
+# Interactive mode — guided setup wizard (recommended)
 toskill
 
-# 3. Or run directly with URLs
+# Or run directly (SDK auto-manages the Copilot CLI process)
 toskill run https://example.com/blog/interesting-article
 
-# 4. Check what was generated
+# Check what was generated
 toskill status
 ```
+
+## Authentication
+
+toskill supports multiple ways to connect to the AI backend. Choose the method that fits your setup.
+
+| Method | Flag | Use Case | Copilot Sub? |
+|--------|------|----------|:---:|
+| **Auto** (default) | `--auth auto` | SDK auto-manages CLI process | Yes |
+| **External CLI** | `--auth cli-url` | Connect to headless server | Yes |
+| **GitHub Token** | `--auth github-token` | Explicit PAT/OAuth token | Yes |
+| **Environment Var** | `--auth env-var` | CI/CD, automation | Yes |
+| **BYOK** | `--auth byok` | Your own API keys | No |
+
+### Auto (Recommended)
+
+The SDK spawns and manages its own CLI process. Uses stored Copilot credentials, env tokens, or `gh` CLI auth automatically. **No manual headless server needed.**
+
+```bash
+toskill run https://example.com/article
+```
+
+### External CLI Server
+
+Connect to a running headless Copilot CLI:
+
+```bash
+# Terminal 1: start headless server
+copilot --headless --port 44321
+
+# Terminal 2: run toskill
+toskill run --auth cli-url --copilot-url localhost:44321 https://example.com/article
+```
+
+### GitHub Token
+
+Provide an explicit token (`gho_`, `ghu_`, or `github_pat_` prefix):
+
+```bash
+toskill run --copilot-token gho_xxxx https://example.com/article
+```
+
+### Environment Variables
+
+Set a token env var — the SDK auto-detects it:
+
+```bash
+export COPILOT_GITHUB_TOKEN=your-token  # or GH_TOKEN, or GITHUB_TOKEN
+toskill run https://example.com/article
+```
+
+### BYOK (Bring Your Own Key)
+
+Use your own API keys from OpenAI, Anthropic, or Azure. No Copilot subscription required.
+
+```bash
+toskill run --auth byok \
+  --byok-provider openai \
+  --byok-url https://api.openai.com/v1 \
+  --byok-key sk-xxx \
+  --model gpt-4o \
+  https://example.com/article
+```
+
+### Auth Priority (Auto mode)
+
+1. Explicit `--copilot-token`
+2. Env vars: `COPILOT_GITHUB_TOKEN` → `GH_TOKEN` → `GITHUB_TOKEN`
+3. Stored Copilot CLI OAuth credentials
+4. `gh` CLI auth (`gh auth token`)
 
 ## Interactive Mode
 
@@ -73,6 +139,13 @@ Run `toskill` with no arguments for a step-by-step wizard:
 
 ```
 ⚡ toskill — Autonomous Skill Builder
+
+┃ 🔑 Authentication
+┃ > Auto — SDK manages CLI (Recommended)
+┃   External CLI — connect to headless server
+┃   GitHub Token — explicit PAT / OAuth token
+┃   Environment Variable — COPILOT_GITHUB_TOKEN / GH_TOKEN
+┃   BYOK — Bring Your Own Key (OpenAI / Anthropic / Azure)
 
 ┃ 🔗 URLs to process
 ┃ > https://example.com/article
@@ -97,8 +170,10 @@ Run `toskill` with no arguments for a step-by-step wizard:
 ```
 
 The wizard:
+- **Offers 5 auth methods** — Auto (SDK-managed), External CLI, GitHub Token, Env Vars, BYOK
 - **Auto-detects your GitHub login** via `gh` CLI — no tokens to copy-paste
 - **Lists your repos** for selection, or lets you create a new one
+- **Dynamically loads available models** from the connected AI backend
 - **Supports per-phase model selection** (e.g., cheap model for extraction, premium for building)
 
 ## Usage
@@ -121,14 +196,19 @@ Commands:
   version                   Print version
 
 Flags:
-  --copilot-url <addr>     Copilot CLI server (default: localhost:44321)
+  --auth <method>          Auth: auto|cli-url|github-token|env-var|byok
+  --copilot-url <addr>     Headless CLI server address (with --auth cli-url)
+  --copilot-token <token>  GitHub token for Copilot (with --auth github-token)
+  --byok-provider <type>   BYOK provider: openai|anthropic|azure
+  --byok-url <url>         BYOK base URL
+  --byok-key <key>         BYOK API key
   --output <dir>           Output directory (default: ./skill-store/)
   --model <name>           LLM model (default: claude-opus-4.6)
   --extract-model <name>   Model override for extraction phase
   --curate-model <name>    Model override for curation phase
   --build-model <name>     Model override for skill building phase
   --github-repo <repo>     GitHub repo (e.g. 'owner/toskill-store')
-  --github-token <tok>     GitHub token (auto-detected from gh CLI)
+  --github-token <tok>     GitHub token for storage (auto-detected from gh CLI)
   --verbose                Verbose output
 ```
 
@@ -210,7 +290,7 @@ export TOSKILL_MODEL=claude-opus-4.6
 export GITHUB_TOKEN=ghp_xxx
 ```
 
-**Valid config keys:** `copilot-url`, `output`, `model`, `extract-model`, `curate-model`, `build-model`, `github-repo`, `github-token`
+**Valid config keys:** `auth-method`, `copilot-url`, `output`, `model`, `extract-model`, `curate-model`, `build-model`, `github-repo`, `github-token`
 
 ## Output Structure
 
